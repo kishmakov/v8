@@ -97,6 +97,9 @@ class V8_EXPORT MicrotaskQueue {
    */
   virtual int GetMicrotasksScopeDepth() const = 0;
 
+  virtual void set_microtasks_policy(v8::MicrotasksPolicy microtasks_policy) = 0;
+  virtual v8::MicrotasksPolicy microtasks_policy() const = 0;
+
   MicrotaskQueue(const MicrotaskQueue&) = delete;
   MicrotaskQueue& operator=(const MicrotaskQueue&) = delete;
 

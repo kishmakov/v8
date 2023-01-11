@@ -93,10 +93,10 @@ class V8_EXPORT_PRIVATE MicrotaskQueue final : public v8::MicrotaskQueue {
   }
 #endif
 
-  void set_microtasks_policy(v8::MicrotasksPolicy microtasks_policy) {
+  void set_microtasks_policy(v8::MicrotasksPolicy microtasks_policy) override {
     microtasks_policy_ = microtasks_policy;
   }
-  v8::MicrotasksPolicy microtasks_policy() const { return microtasks_policy_; }
+  v8::MicrotasksPolicy microtasks_policy() const override { return microtasks_policy_; }
 
   intptr_t capacity() const { return capacity_; }
   intptr_t size() const { return size_; }
