@@ -340,7 +340,7 @@ struct V8_DEPRECATE_SOON(
 };
 
 template <typename T>
-struct V8_DEPRECATED(
+struct V8_DEPRECATE_SOON(
     "When an API function expects a TypedArray as a parameter, the type in the "
     "signature should be `v8::Local<v8::Value>` instead of "
     "FastApiTypedArray<>. The API function then has to type-check the "
