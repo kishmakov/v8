@@ -6,9 +6,18 @@
 #error Internationalization is expected to be enabled.
 #endif  // V8_INTL_SUPPORT
 
+#include <v8/src/debug/debug-interface.h>
+#include <v8-json.h>
+#include <v8-primitive.h>
+
 #include <cmath>
+#include <condition_variable>
+#include <fstream>
 #include <list>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
@@ -1026,6 +1035,288 @@ BUILTIN(StringPrototypeToLocaleUpperCase) {
     RETURN_RESULT_OR_FAILURE(isolate, Intl::StringLocaleConvertCase(
                                           isolate, string, true, maybe_locale));
   }
+}
+
+size_t fib(int n) { /* fib(41) < 10 */
+  return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wexit-time-destructors"
+
+constexpr int CODE_OF_UNDEFINED = 0;
+constexpr int CODE_OF_NULL = 1;
+
+std::mutex mtx;
+
+typedef std::shared_ptr<std::condition_variable> shared_cv;
+std::unordered_map<std::string, shared_cv> cvs;
+std::unordered_map<std::string, int> idToType;
+std::unordered_map<std::string, bool> idToBool;
+std::unordered_map<std::string, std::string> idToStr;
+std::unordered_map<std::string, double> idToNum;
+
+int counter = 0;
+
+#pragma clang diagnostic pop
+
+shared_cv GetCV(const std::string& id) {
+  std::string extensionId = id.substr(0, id.find(':'));
+
+  std::lock_guard<std::mutex> lock(mtx);
+
+  if (cvs.find(extensionId) == cvs.end()) {
+    cvs.emplace(extensionId, std::make_shared<std::condition_variable>());
+  }
+
+  return cvs[extensionId];
+}
+
+std::string ToString(BuiltinArguments args, Isolate* isolate, int id) {
+  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, id));
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string result;
+
+  if (value->IsString()) {
+    v8::String::Utf8Value utf8(v8_isolate, value);
+    result = *utf8 ? *utf8 : "Invalid UTF-8 string";
+  } else {
+    Local<v8::String> jsonString;
+    if (JSON::Stringify(v8_isolate->GetCurrentContext(), value).ToLocal(&jsonString)) {
+      v8::String::Utf8Value utf8(v8_isolate, jsonString);
+      result = *utf8 ? *utf8 : "Invalid UTF-8 string";
+    } else {
+      result = "Unable to convert value to string.";
+    }
+  }
+
+  return result;
+}
+
+void InstallInto(Handle<Object> object, Local<v8::String> key, Local<Value> value, v8::Isolate* isolate) {
+  Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
+  dst->Set(isolate->GetCurrentContext(), key, value).Check();
+}
+
+// true if value was serialized
+bool SaveValue(const std::string& id, Local<Value> value, int typeCode, v8::Isolate* isolate) {
+  idToType.emplace(id, typeCode);
+
+  if (value->IsUndefined()) return true;
+
+  if (value->IsBoolean()) {
+    idToBool.emplace(id, value->BooleanValue(isolate));
+    return true;
+  }
+
+  if (value->IsString()) {
+    idToStr.emplace(id, *v8::String::Utf8Value(isolate, value));
+    return true;
+  }
+
+  if (value->IsNumber()) {
+    idToNum.emplace(id, value->NumberValue(isolate->GetCurrentContext()).FromMaybe(0.0));
+    return true;
+  }
+
+  return false;
+}
+
+void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id, v8::Isolate* isolate) {
+  if (idToType[id] == CODE_OF_UNDEFINED) {
+    InstallInto(dst, key, v8::Undefined(isolate), isolate);
+  }
+
+  if (idToType[id] == CODE_OF_NULL) {
+    InstallInto(dst, key, v8::Null(isolate), isolate);
+  }
+
+  if (idToBool.contains(id)) {
+    InstallInto(dst, key, v8::Boolean::New(isolate, idToBool[id]), isolate);
+    idToBool.erase(id);
+  }
+
+  if (idToStr.contains(id)) {
+    MaybeLocal<v8::String> value = v8::String::NewFromUtf8(isolate, idToStr[id].c_str());
+    InstallInto(dst, key, value.ToLocalChecked(), isolate);
+    idToStr.erase(id);
+  }
+
+  if (idToNum.contains(id)) {
+    Local<Value> value = v8::Number::New(isolate, idToNum[id]);
+    InstallInto(dst, key, value, isolate);
+    idToNum.erase(id);
+  }
+
+  idToType.erase(id);
+}
+
+BUILTIN(WaitCall) {
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "WaitCall.started";
+  }
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = ToString(args, isolate, 1);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << " id=" << id << std::endl;
+    log_file.close();
+  }
+
+  shared_cv cv = GetCV(id);
+  std::unique_lock<std::mutex> lock(mtx);
+  cv->wait(lock, [id] { return idToType.contains(id); });
+  DCHECK(isolate->IsOnCentralStack());
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  ReadValue(result, keySimpleValue, id, v8_isolate);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "WaitCall.finished id=" << id << std::endl;
+    log_file.close();
+  }
+
+  return *result;
+}
+
+BUILTIN(ResumeCall) {
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "ResumeCall.started";
+    log_file.close();
+  }
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = ToString(args, isolate, 1);
+  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << " id=" << id << " type=" << code << std::endl;
+    log_file.close();
+  }
+
+  shared_cv cv = GetCV(id);
+  std::lock_guard<std::mutex> lock(mtx);
+  cv->notify_one();
+
+  auto result = SaveValue(id, value, code, v8_isolate)
+                    ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
+                    : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "ResumeCall.finished id=" << id << std::endl;
+    log_file.close();
+  }
+
+  return result;
+}
+
+BUILTIN(WaitType) {
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "WaitType.started";
+    log_file.close();
+  }
+
+  HandleScope scope(isolate);
+  DCHECK(isolate->IsOnCentralStack());
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = ToString(args, isolate, 1);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << " id=" << id << std::endl;
+    log_file.close();
+  }
+
+  shared_cv cv = GetCV(id);
+  std::unique_lock<std::mutex> lock(mtx);
+  cv->wait(lock, [id] { return idToType.contains(id); });
+  DCHECK(isolate->IsOnCentralStack());
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  ReadValue(result, keySimpleValue, id, v8_isolate);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "WaitType.finished id=" << id << std::endl;
+    log_file.close();
+  }
+
+  return *result;
+}
+
+BUILTIN(ResumeType) {
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "ResumeType.started";
+    log_file.close();
+  }
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = ToString(args, isolate, 1);
+  Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << " id=" << id << " code=" << code << std::endl;
+    log_file.close();
+  }
+
+  shared_cv cv = GetCV(id);
+  std::lock_guard<std::mutex> lock(mtx);
+  cv->notify_one();
+
+  SaveValue(id, object, code, v8_isolate);
+
+  auto result = ReadOnlyRoots(isolate).undefined_value();
+
+  {
+    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
+    log_file << ++counter << " ";
+    log_file << "ResumeType.finished id=" << id << std::endl;
+    log_file.close();
+  }
+
+  return result;
+
 }
 
 BUILTIN(PluralRulesConstructor) {

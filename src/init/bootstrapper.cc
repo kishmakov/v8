@@ -2809,6 +2809,28 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           Builtin::kBooleanPrototypeValueOf, 0, kAdapt);
   }
 
+  { // ---  W o r k e r ---
+    InstallFunction(isolate_, global, "WaitCall", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kWaitCall, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "ResumeCall", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kResumeCall, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "WaitType", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kWaitType, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "ResumeType", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kResumeType, 1, kDontAdapt);
+  }
+
   {  // --- S t r i n g ---
     Handle<JSFunction> string_fun =
         InstallFunction(isolate_, global, "String", JS_PRIMITIVE_WRAPPER_TYPE,
