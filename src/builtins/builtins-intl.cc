@@ -1072,8 +1072,12 @@ shared_cv GetCV(const std::string& id) {
   return cvs[extensionId];
 }
 
-std::string ToString(BuiltinArguments args, Isolate* isolate, int id) {
-  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, id));
+std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
+  Handle<Object> idObj = args.atOrUndefined(isolate, id);
+
+  if (IsUndefined(*idObj, isolate)) return "";
+
+  Local<Value> value = Utils::ToLocal(idObj);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string result;
@@ -1162,13 +1166,15 @@ BUILTIN(WaitCall) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = ToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 1);
 
   {
     std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
     log_file << " id=" << id << std::endl;
     log_file.close();
   }
+
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   shared_cv cv = GetCV(id);
   std::unique_lock<std::mutex> lock(mtx);
@@ -1205,7 +1211,7 @@ BUILTIN(ResumeCall) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = ToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 1);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
@@ -1246,13 +1252,15 @@ BUILTIN(WaitType) {
   DCHECK(isolate->IsOnCentralStack());
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = ToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 1);
 
   {
     std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
     log_file << " id=" << id << std::endl;
     log_file.close();
   }
+
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   shared_cv cv = GetCV(id);
   std::unique_lock<std::mutex> lock(mtx);
@@ -1289,7 +1297,7 @@ BUILTIN(ResumeType) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = ToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 1);
   Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 2));
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
@@ -1316,7 +1324,6 @@ BUILTIN(ResumeType) {
   }
 
   return result;
-
 }
 
 BUILTIN(PluralRulesConstructor) {
