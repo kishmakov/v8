@@ -12,12 +12,15 @@
 
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <fstream>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <ostream>
+#include <streambuf>
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
@@ -1156,23 +1159,38 @@ void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id,
   idToType.erase(id);
 }
 
+
+
+namespace {
+
+std::ostream& BuiltinsLog() {
+  static std::ostream* active = []() -> std::ostream* {
+    const char* dir = std::getenv("ISOLATION_LOG_DIR");
+    if (dir && dir[0] != '\0') {
+      std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
+      auto* fs = new std::ofstream(path, std::ios::app);
+      if (fs->is_open()) return fs; // real log
+    }
+
+    struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
+    auto* null_buf = new NullBuf();
+    return new std::ostream(null_buf); // fallback dummy log
+  }();
+
+  return *active;
+}
+
+} // namespace
+
 BUILTIN(WaitCall) {
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "WaitCall.started";
-  }
+  BuiltinsLog() << ++counter << " " << "WaitCall.started";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string id = IdToString(args, isolate, 1);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << " id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << " id=" << id << std::endl;
 
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
@@ -1190,23 +1208,13 @@ BUILTIN(WaitCall) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "WaitCall.finished id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "WaitCall.finished id=" << id << std::endl;
 
   return *result;
 }
 
 BUILTIN(ResumeCall) {
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "ResumeCall.started";
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "ResumeCall.started";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1216,11 +1224,7 @@ BUILTIN(ResumeCall) {
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << " id=" << id << " type=" << code << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << " id=" << id << " type=" << code << std::endl;
 
   shared_cv cv = GetCV(id);
   std::lock_guard<std::mutex> lock(mtx);
@@ -1230,23 +1234,13 @@ BUILTIN(ResumeCall) {
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
                     : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "ResumeCall.finished id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "ResumeCall.finished id=" << id << std::endl;
 
   return result;
 }
 
 BUILTIN(WaitType) {
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "WaitType.started";
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "WaitType.started";
 
   HandleScope scope(isolate);
   DCHECK(isolate->IsOnCentralStack());
@@ -1254,11 +1248,7 @@ BUILTIN(WaitType) {
 
   std::string id = IdToString(args, isolate, 1);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << " id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << " id=" << id << std::endl;
 
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
@@ -1276,23 +1266,13 @@ BUILTIN(WaitType) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "WaitType.finished id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "WaitType.finished id=" << id << std::endl;
 
   return *result;
 }
 
 BUILTIN(ResumeType) {
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "ResumeType.started";
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "ResumeType.started";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1302,11 +1282,7 @@ BUILTIN(ResumeType) {
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << " id=" << id << " code=" << code << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << " id=" << id << " code=" << code << std::endl;
 
   shared_cv cv = GetCV(id);
   std::lock_guard<std::mutex> lock(mtx);
@@ -1316,12 +1292,7 @@ BUILTIN(ResumeType) {
 
   auto result = ReadOnlyRoots(isolate).undefined_value();
 
-  {
-    std::ofstream log_file("/home/kishmakov/pause.txt", std::ios::app);
-    log_file << ++counter << " ";
-    log_file << "ResumeType.finished id=" << id << std::endl;
-    log_file.close();
-  }
+  BuiltinsLog() << ++counter << " " << "ResumeType.finished id=" << id << std::endl;
 
   return result;
 }
