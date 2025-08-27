@@ -6,9 +6,21 @@
 #error Internationalization is expected to be enabled.
 #endif  // V8_INTL_SUPPORT
 
+#include <v8/src/debug/debug-interface.h>
+#include <v8-json.h>
+#include <v8-primitive.h>
+
 #include <cmath>
+#include <condition_variable>
+#include <cstdlib>
+#include <fstream>
 #include <list>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <ostream>
+#include <streambuf>
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
@@ -1026,6 +1038,257 @@ BUILTIN(StringPrototypeToLocaleUpperCase) {
     RETURN_RESULT_OR_FAILURE(isolate, Intl::StringLocaleConvertCase(
                                           isolate, string, true, maybe_locale));
   }
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wexit-time-destructors"
+
+namespace {
+
+constexpr int CODE_OF_UNDEFINED = 0;
+constexpr int CODE_OF_NULL = 1;
+
+std::mutex mtx;
+
+typedef std::shared_ptr<std::condition_variable> shared_cv;
+std::unordered_map<std::string, shared_cv> cvs;
+std::unordered_map<std::string, int> idToType;
+std::unordered_map<std::string, bool> idToBool;
+std::unordered_map<std::string, std::string> idToStr;
+std::unordered_map<std::string, double> idToNum;
+
+int counter = 0;
+
+#pragma clang diagnostic pop
+
+shared_cv GetCV(const std::string& id) {
+  std::string extensionId = id.substr(0, id.find(':'));
+
+  std::lock_guard<std::mutex> lock(mtx);
+
+  if (cvs.find(extensionId) == cvs.end()) {
+    cvs.emplace(extensionId, std::make_shared<std::condition_variable>());
+  }
+
+  return cvs[extensionId];
+}
+
+std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
+  Handle<Object> idObj = args.atOrUndefined(isolate, id);
+
+  if (IsUndefined(*idObj, isolate)) return "";
+
+  Local<Value> value = Utils::ToLocal(idObj);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string result;
+
+  if (value->IsString()) {
+    v8::String::Utf8Value utf8(v8_isolate, value);
+    result = *utf8 ? *utf8 : "Invalid UTF-8 string";
+  } else {
+    Local<v8::String> jsonString;
+    if (JSON::Stringify(v8_isolate->GetCurrentContext(), value).ToLocal(&jsonString)) {
+      v8::String::Utf8Value utf8(v8_isolate, jsonString);
+      result = *utf8 ? *utf8 : "Invalid UTF-8 string";
+    } else {
+      result = "Unable to convert value to string.";
+    }
+  }
+
+  return result;
+}
+
+void InstallInto(Handle<Object> object, Local<v8::String> key, Local<Value> value, v8::Isolate* isolate) {
+  Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
+  dst->Set(isolate->GetCurrentContext(), key, value).Check();
+}
+
+// true if value was serialized
+bool SaveValue(const std::string& id, Local<Value> value, int typeCode, v8::Isolate* isolate) {
+  idToType.emplace(id, typeCode);
+
+  if (value->IsUndefined()) return true;
+
+  if (value->IsBoolean()) {
+    idToBool.emplace(id, value->BooleanValue(isolate));
+    return true;
+  }
+
+  if (value->IsString()) {
+    idToStr.emplace(id, *v8::String::Utf8Value(isolate, value));
+    return true;
+  }
+
+  if (value->IsNumber()) {
+    idToNum.emplace(id, value->NumberValue(isolate->GetCurrentContext()).FromMaybe(0.0));
+    return true;
+  }
+
+  return false;
+}
+
+void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id, v8::Isolate* isolate) {
+  if (idToType[id] == CODE_OF_UNDEFINED) {
+    InstallInto(dst, key, v8::Undefined(isolate), isolate);
+  }
+
+  if (idToType[id] == CODE_OF_NULL) {
+    InstallInto(dst, key, v8::Null(isolate), isolate);
+  }
+
+  if (idToBool.contains(id)) {
+    InstallInto(dst, key, v8::Boolean::New(isolate, idToBool[id]), isolate);
+    idToBool.erase(id);
+  }
+
+  if (idToStr.contains(id)) {
+    MaybeLocal<v8::String> value = v8::String::NewFromUtf8(isolate, idToStr[id].c_str());
+    InstallInto(dst, key, value.ToLocalChecked(), isolate);
+    idToStr.erase(id);
+  }
+
+  if (idToNum.contains(id)) {
+    Local<Value> value = v8::Number::New(isolate, idToNum[id]);
+    InstallInto(dst, key, value, isolate);
+    idToNum.erase(id);
+  }
+
+  idToType.erase(id);
+}
+
+std::ostream& BuiltinsLog() {
+  static std::ostream* active = []() -> std::ostream* {
+    const char* dir = std::getenv("ISOLATION_LOG_DIR");
+    if (dir && dir[0] != '\0') {
+      std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
+      auto* fs = new std::ofstream(path, std::ios::app);
+      if (fs->is_open()) return fs; // real log
+    }
+
+    struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
+    auto* null_buf = new NullBuf();
+    return new std::ostream(null_buf); // fallback dummy log
+  }();
+
+  return *active;
+}
+
+} // namespace
+
+BUILTIN(WaitCall) {
+  BuiltinsLog() << ++counter << " " << "WaitCall.started";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = IdToString(args, isolate, 1);
+
+  BuiltinsLog() << " id=" << id << std::endl;
+
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
+
+  shared_cv cv = GetCV(id);
+  std::unique_lock<std::mutex> lock(mtx);
+  cv->wait(lock, [id] { return idToType.contains(id); });
+  DCHECK(isolate->IsOnCentralStack());
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  ReadValue(result, keySimpleValue, id, v8_isolate);
+
+  BuiltinsLog() << ++counter << " " << "WaitCall.finished id=" << id << std::endl;
+
+  return *result;
+}
+
+BUILTIN(ResumeCall) {
+  BuiltinsLog() << ++counter << " " << "ResumeCall.started";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = IdToString(args, isolate, 1);
+  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
+
+  BuiltinsLog() << " id=" << id << " type=" << code << std::endl;
+
+  shared_cv cv = GetCV(id);
+  std::lock_guard<std::mutex> lock(mtx);
+  cv->notify_one();
+
+  auto result = SaveValue(id, value, code, v8_isolate)
+                    ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
+                    : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
+
+  BuiltinsLog() << ++counter << " " << "ResumeCall.finished id=" << id << std::endl;
+
+  return result;
+}
+
+BUILTIN(WaitType) {
+  BuiltinsLog() << ++counter << " " << "WaitType.started";
+
+  HandleScope scope(isolate);
+  DCHECK(isolate->IsOnCentralStack());
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = IdToString(args, isolate, 1);
+
+  BuiltinsLog() << " id=" << id << std::endl;
+
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
+
+  shared_cv cv = GetCV(id);
+  std::unique_lock<std::mutex> lock(mtx);
+  cv->wait(lock, [id] { return idToType.contains(id); });
+  DCHECK(isolate->IsOnCentralStack());
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  ReadValue(result, keySimpleValue, id, v8_isolate);
+
+  BuiltinsLog() << ++counter << " " << "WaitType.finished id=" << id << std::endl;
+
+  return *result;
+}
+
+BUILTIN(ResumeType) {
+  BuiltinsLog() << ++counter << " " << "ResumeType.started";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string id = IdToString(args, isolate, 1);
+  Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
+
+  BuiltinsLog() << " id=" << id << " code=" << code << std::endl;
+
+  shared_cv cv = GetCV(id);
+  std::lock_guard<std::mutex> lock(mtx);
+  cv->notify_one();
+
+  SaveValue(id, object, code, v8_isolate);
+
+  auto result = ReadOnlyRoots(isolate).undefined_value();
+
+  BuiltinsLog() << ++counter << " " << "ResumeType.finished id=" << id << std::endl;
+
+  return result;
 }
 
 BUILTIN(PluralRulesConstructor) {

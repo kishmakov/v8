@@ -2776,7 +2776,17 @@ Maybe<bool> JSProxy::IsArray(Handle<JSProxy> proxy) {
     }
     object = handle(Cast<JSReceiver>(proxy->target()), isolate);
     if (IsJSArray(*object)) return Just(true);
-    if (!IsJSProxy(*object)) return Just(false);
+    if (!IsJSProxy(*object)) {
+      Handle<Object> prototype;
+      if (JSReceiver::GetPrototype(isolate, object).ToHandle(&prototype)) {
+        Handle<Context> context = isolate->native_context();
+        Handle<Object> array_proto = handle(context->array_function()->prototype(), isolate);
+
+        if (*prototype == *array_proto) return Just(true);
+      }
+
+      return Just(false);
+    }
   }
 
   // Too deep recursion, throw a RangeError.

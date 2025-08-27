@@ -2134,6 +2134,10 @@ namespace internal {
   TFJ(StringPrototypeToLocaleLowerCase, kDontAdaptArgumentsSentinel)           \
   /* ecma402 #sup-string.prototype.tolocaleuppercase */                        \
   CPP(StringPrototypeToLocaleUpperCase, kDontAdaptArgumentsSentinel)           \
+  CPP(WaitCall, kDontAdaptArgumentsSentinel)                                   \
+  CPP(ResumeCall, kDontAdaptArgumentsSentinel)                                 \
+  CPP(WaitType, kDontAdaptArgumentsSentinel)                                   \
+  CPP(ResumeType, kDontAdaptArgumentsSentinel)                                 \
   /* ES #sec-string.prototype.tolowercase */                                   \
   TFJ(StringPrototypeToLowerCaseIntl, kJSArgcReceiverSlots, kReceiver)         \
   /* ES #sec-string.prototype.touppercase */                                   \
