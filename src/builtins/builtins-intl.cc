@@ -1194,10 +1194,9 @@ BUILTIN(WaitCall) {
 
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
-  shared_cv cv = GetCV(id);
-  std::unique_lock<std::mutex> lock(mtx);
-  cv->wait(lock, [id] { return idToType.contains(id); });
-  DCHECK(isolate->IsOnCentralStack());
+  BuiltinsLog() << counter << " WaitCall.before_break id=" << id << std::endl;
+  v8::debug::BreakRightNow(v8_isolate, {v8::debug::BreakReason::kAgent});
+  BuiltinsLog() << counter << " WaitCall.after_break id=" << id << " value_code=" << idToType[id] << std::endl;
 
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
 
@@ -1208,14 +1207,12 @@ BUILTIN(WaitCall) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  BuiltinsLog() << ++counter << " " << "WaitCall.finished id=" << id << std::endl;
-
+  BuiltinsLog() << counter << " " << "WaitCall.finished id=" << id << std::endl;
   return *result;
 }
 
 BUILTIN(ResumeCall) {
   BuiltinsLog() << ++counter << " " << "ResumeCall.started";
-
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
@@ -1224,17 +1221,22 @@ BUILTIN(ResumeCall) {
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  BuiltinsLog() << " id=" << id << " type=" << code << std::endl;
+  BuiltinsLog() << " id=" << id << " type=" << code;
 
-  shared_cv cv = GetCV(id);
-  std::lock_guard<std::mutex> lock(mtx);
-  cv->notify_one();
+  bool value_saved = SaveValue(id, value, code, v8_isolate);
 
-  auto result = SaveValue(id, value, code, v8_isolate)
+  BuiltinsLog() << " value_saved=" << value_saved << std::endl;
+
+  BuiltinsLog() << counter << " ResumeCall.resuming_thread id=" << id << std::endl;
+  v8::debug::ClearBreakOnNextFunctionCall(v8_isolate);
+  v8::debug::ClearStepping(v8_isolate);
+  BuiltinsLog() << counter << " ResumeCall.resumed_thread id=" << id << std::endl;
+
+  auto result = value_saved
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
                     : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
 
-  BuiltinsLog() << ++counter << " " << "ResumeCall.finished id=" << id << std::endl;
+  BuiltinsLog() << counter << " ResumeCall.finished id=" << id << std::endl;
 
   return result;
 }
