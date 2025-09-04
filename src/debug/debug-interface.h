@@ -138,7 +138,8 @@ enum class BreakReason : uint8_t {
   kDebuggerStatement,
   kOOM,
   kScheduled,
-  kAgent
+  kAgent,
+  kInternalWait
 };
 typedef base::EnumSet<BreakReason> BreakReasons;
 
