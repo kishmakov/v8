@@ -79,11 +79,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  // Internal silent wait API (WaitCall/ResumeCall). Initiates a breakpoint
-  // with BreakReason::kInternalWait that suppresses debugger pause events.
-  void waitCall(int targetContextGroupId);
-  void resumeCall(int targetContextGroupId);
-  bool internalWaitActive() const;
+  void waitCall(const std::string& id);
+  void resumeCall(const std::string& id);
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);
@@ -336,11 +333,6 @@ class V8Debugger : public v8::debug::DebugDelegate,
   std::unique_ptr<TerminateExecutionCallback> m_terminateExecutionCallback;
   v8::Global<v8::Context> m_terminateExecutionCallbackContext;
   bool m_terminateExecutionReported = true;
-
-  // Internal wait (WaitCall / ResumeCall) state moved to file-scope statics in v8-debugger.cc.
-  // bool m_internal_wait_should_resume_ = false;
-  // v8::base::Mutex m_internal_wait_mutex_;
-  // v8::base::ConditionVariable m_internal_wait_cv_;
 };
 
 }  // namespace v8_inspector

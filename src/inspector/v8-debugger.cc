@@ -119,8 +119,6 @@ V8Debugger::~V8Debugger() {
   }
 }
 
-bool V8Debugger::internalWaitActive() const { return m_internalWaitActive; }
-
 void V8Debugger::enable() {
   if (m_enableCount++) return;
   v8::HandleScope scope(m_isolate);
@@ -489,28 +487,27 @@ void V8Debugger::clearContinueToLocation() {
 }
 
 namespace {
-// Simple thread-safe logger for WaitCall/ResumeCall diagnostics.
-static void LogV8WaitResume(const char* event,
-                            int requested_context_group_id,
-                            int current_target_group_id,
-                            bool enabled,
-                            bool is_paused,
-                            bool internal_wait_active) {
-  // Absolute path requested by user.
+
+void LogV8(
+  const char* event,
+  int requested_context_group_id,
+  int current_target_group_id,
+  const char* id,
+  bool internal_wait_active)
+{
   static const char kLogPath[] = "/home/kishmakov/.vscode-oss-dev/logs/log_v8_calls.txt";
   static std::mutex log_mutex;
+
   std::lock_guard<std::mutex> lk(log_mutex);
-  std::ofstream ofs(kLogPath, std::ios::app);
-  if (!ofs.is_open()) return;  // Fail silently if path not available.
-  // Lightweight timestamp (epoch milliseconds) using std::chrono.
+  std::ofstream log(kLogPath, std::ios::app);
+  if (!log.is_open()) return;
+
   using namespace std::chrono;
-  auto now = time_point_cast<milliseconds>(system_clock::now()).time_since_epoch().count();
-  ofs << now
+  log << time_point_cast<milliseconds>(system_clock::now()).time_since_epoch().count()
       << " event=" << event
       << " requested_group=" << requested_context_group_id
       << " current_target_group=" << current_target_group_id
-      << " enabled=" << enabled
-      << " isPaused=" << is_paused
+      << " id=" << id
       << " internalActive=" << internal_wait_active
       << '\n';
 }
@@ -531,19 +528,11 @@ void V8Debugger::handleProgramBreak(
     return;
   }
 
-  // Internal silent wait handling. We intentionally do not emit Debugger
-  // paused/resumed events. We simply park this thread until resumeCall is
-  // invoked. This keeps the call stack similar to a normal pause (the break
-  // originates here) but avoids surfacing protocol events.
+  // We intentionally do not emit Debugger paused/resumed events.
+  // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
     m_internalWaitActive = true;
-    // Clear target so that other requested pauses won't get confused.
-    // We'll restore normal operation after resuming.
-    // We do not mark m_pausedContextGroupId to avoid isPaused()==true from
-    // external perspective.
     {
-      LogV8WaitResume("handleProgramBreak", -1, -1, enabled(), isPaused(), m_internalWaitActive);
-
       v8::Context::Scope scope(pausedContext);
       v8::base::MutexGuard guard(&m_internal_wait_mutex_);
       while (!m_internal_wait_should_resume_) {
@@ -553,7 +542,7 @@ void V8Debugger::handleProgramBreak(
     }
     m_targetContextGroupId = 0;
     m_internalWaitActive = false;
-    // Allow further breaks after resume.
+
     return;
   }
 
@@ -1502,54 +1491,65 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-void V8Debugger::waitCall(int targetContextGroupId) {
-  LogV8WaitResume("waitCall.enter", targetContextGroupId, m_targetContextGroupId,
-                  enabled(), isPaused(), m_internalWaitActive);
+void V8Debugger::waitCall(const std::string& id) {
+  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
+  const int group_id = m_inspector->contextGroupId(context_id);
+
+  LogV8("waitCall.enter", group_id, m_targetContextGroupId,
+                  id.c_str(), m_internalWaitActive);
   if (!enabled()) {
-    LogV8WaitResume("waitCall.skip_disabled", targetContextGroupId, m_targetContextGroupId,
-                    enabled(), isPaused(), m_internalWaitActive);
+    LogV8("waitCall.skip_disabled", group_id, m_targetContextGroupId,
+                    id.c_str(), m_internalWaitActive);
     return;
   }
   if (isPaused() || m_internalWaitActive) {
-    LogV8WaitResume("waitCall.skip_already_paused_or_internal", targetContextGroupId, m_targetContextGroupId,
-                    enabled(), isPaused(), m_internalWaitActive);
+    LogV8("waitCall.skip_already_paused_or_internal", group_id, m_targetContextGroupId,
+                    id.c_str(), m_internalWaitActive);
     return;  // Ignore nested.
   }
-  DCHECK(targetContextGroupId);
-  m_targetContextGroupId = targetContextGroupId;
-  LogV8WaitResume("waitCall.break_request", targetContextGroupId, m_targetContextGroupId,
-                  enabled(), isPaused(), m_internalWaitActive);
+
+  DCHECK(group_id);
+
+  m_targetContextGroupId = group_id;
+  LogV8("waitCall.break_request", group_id, m_targetContextGroupId,
+                  id.c_str(), m_internalWaitActive);
   v8::debug::BreakRightNow(
       m_isolate,
       v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
 }
 
-void V8Debugger::resumeCall(int targetContextGroupId) {
-  LogV8WaitResume("resumeCall.enter", targetContextGroupId, m_targetContextGroupId,
-                  enabled(), isPaused(), m_internalWaitActive);
+void V8Debugger::resumeCall(const std::string& id) {
+  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
+  const int group_id = m_inspector->contextGroupId(context_id);
+
+  LogV8("resumeCall.enter", group_id, m_targetContextGroupId,
+                  id.c_str(), m_internalWaitActive);
   if (!enabled()) {
-    LogV8WaitResume("resumeCall.skip_disabled", targetContextGroupId, m_targetContextGroupId,
-                    enabled(), isPaused(), m_internalWaitActive);
+    LogV8("resumeCall.skip_disabled", group_id, m_targetContextGroupId,
+                    id.c_str(), m_internalWaitActive);
     return;
   }
+
   if (!m_internalWaitActive) {
-    LogV8WaitResume("resumeCall.skip_not_active", targetContextGroupId, m_targetContextGroupId,
-                    enabled(), isPaused(), m_internalWaitActive);
+    LogV8("resumeCall.skip_not_active", group_id, m_targetContextGroupId,
+                    id.c_str(), m_internalWaitActive);
     return;  // Nothing to resume.
   }
-  if (targetContextGroupId && targetContextGroupId != m_targetContextGroupId &&
-      m_targetContextGroupId != 0) {
-    LogV8WaitResume("resumeCall.skip_group_mismatch", targetContextGroupId, m_targetContextGroupId,
-                    enabled(), isPaused(), m_internalWaitActive);
+
+  if (group_id && group_id != m_targetContextGroupId && m_targetContextGroupId != 0) {
+    LogV8("resumeCall.skip_group_mismatch", group_id, m_targetContextGroupId,
+                    id.c_str(), m_internalWaitActive);
     return;  // Different context group.
   }
+
   {
     v8::base::MutexGuard guard(&m_internal_wait_mutex_);
     m_internal_wait_should_resume_ = true;
     m_internal_wait_cv_.NotifyAll();
   }
-  LogV8WaitResume("resumeCall.signaled", targetContextGroupId, m_targetContextGroupId,
-                  enabled(), isPaused(), m_internalWaitActive);
+
+  LogV8("resumeCall.signaled", group_id, m_targetContextGroupId,
+                  id.c_str(), m_internalWaitActive);
 }
 
 }  // namespace v8_inspector
