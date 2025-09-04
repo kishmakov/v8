@@ -1190,18 +1190,18 @@ BUILTIN(WaitCall) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string id = IdToString(args, isolate, 1);
+  std::string thread_id = IdToString(args, isolate, 2);
 
   BuiltinsLog() << " id=" << id << std::endl;
-
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   // Initiate internal silent wait pause via V8Debugger.
   // TODO: what if null?
   auto* inspector_impl = static_cast<v8_inspector::V8InspectorImpl*>(debug::GetInspector(v8_isolate));
 
-  BuiltinsLog() << counter << " WaitCall.before_wait id=" << id << std::endl;
-  inspector_impl->debugger()->waitCall(id);
-  BuiltinsLog() << counter << " WaitCall.after_wait id=" << id << " value_code=" << idToType[id] << std::endl;
+  BuiltinsLog() << counter << " WaitCall.before_wait id=" << id << " thread=" << thread_id << std::endl;
+  inspector_impl->debugger()->waitCall(thread_id);
+  BuiltinsLog() << counter << " WaitCall.after_wait id=" << id << " thread=" << thread_id << " value_code=" << idToType[id] << std::endl;
 
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
 
@@ -1222,21 +1222,20 @@ BUILTIN(ResumeCall) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string id = IdToString(args, isolate, 1);
-  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
-  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  std::string thread_id = IdToString(args, isolate, 2);
+  Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
   BuiltinsLog() << " id=" << id << " type=" << code;
-
   bool value_saved = SaveValue(id, value, code, v8_isolate);
-
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   // TODO: what if null?
   auto* inspector = static_cast<v8_inspector::V8InspectorImpl*>(debug::GetInspector(v8_isolate));
 
   BuiltinsLog() << counter << " ResumeCall.before_resume id=" << id << std::endl;
-  inspector->debugger()->resumeCall(id);
+  inspector->debugger()->resumeCall(thread_id);
   BuiltinsLog() << counter << " ResumeCall.after_resume id=" << id << std::endl;
 
   auto result = value_saved

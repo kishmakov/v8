@@ -79,8 +79,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  void waitCall(const std::string& id);
-  void resumeCall(const std::string& id);
+  void waitCall(const std::string& thread_id);
+  void resumeCall(const std::string& thread_id);
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);
