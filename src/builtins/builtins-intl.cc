@@ -1170,7 +1170,10 @@ std::ostream& BuiltinsLog() {
     if (dir && dir[0] != '\0') {
       std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
       auto* fs = new std::ofstream(path, std::ios::app);
-      if (fs->is_open()) return fs; // real log
+      if (fs->is_open()) {
+        *fs << "pid=" << getpid() << '\n';
+        return fs; // real log
+      }
     }
 
     struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
