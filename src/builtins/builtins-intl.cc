@@ -1041,9 +1041,33 @@ BUILTIN(StringPrototypeToLocaleUpperCase) {
   }
 }
 
+namespace {
+
 size_t fib(int n) { /* fib(41) < 10 */
   return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
 }
+
+std::ostream& BuiltinsLog() {
+  static std::ostream* active = []() -> std::ostream* {
+    const char* dir = std::getenv("ISOLATION_LOG_DIR");
+    if (dir && dir[0] != '\0') {
+      std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
+      auto* fs = new std::ofstream(path, std::ios::app);
+      if (fs->is_open()) {
+        *fs << "pid=" << getpid() << '\n';
+        return fs; // real log
+      }
+    }
+
+    struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
+    auto* null_buf = new NullBuf();
+    return new std::ostream(null_buf); // fallback dummy log
+  }();
+
+  return *active;
+}
+
+} // namespace
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
@@ -1159,32 +1183,6 @@ void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id,
 
   idToType.erase(id);
 }
-
-
-
-namespace {
-
-std::ostream& BuiltinsLog() {
-  static std::ostream* active = []() -> std::ostream* {
-    const char* dir = std::getenv("ISOLATION_LOG_DIR");
-    if (dir && dir[0] != '\0') {
-      std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
-      auto* fs = new std::ofstream(path, std::ios::app);
-      if (fs->is_open()) {
-        *fs << "pid=" << getpid() << '\n';
-        return fs; // real log
-      }
-    }
-
-    struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
-    auto* null_buf = new NullBuf();
-    return new std::ostream(null_buf); // fallback dummy log
-  }();
-
-  return *active;
-}
-
-} // namespace
 
 BUILTIN(WaitCall) {
   BuiltinsLog() << ++counter << " " << "WaitCall.started";
