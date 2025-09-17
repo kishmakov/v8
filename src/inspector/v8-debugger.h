@@ -81,6 +81,13 @@ class V8Debugger : public v8::debug::DebugDelegate,
 
   void waitCall(const std::string& thread_id);
   void resumeCall(const std::string& thread_id);
+  bool isThreadPaused(const std::string& thread_id) const;
+  void runOnPaused(const std::string& thread_id,
+                   const std::string& target_id,
+                   const std::string& member_id,
+                   const std::string& args_json,
+                   const std::string& result_id,
+                   bool is_async);
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);

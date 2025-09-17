@@ -1100,6 +1100,11 @@ shared_cv GetCV(const std::string& id) {
   return cvs[extensionId];
 }
 
+inline v8_inspector::V8Debugger* GetDebugger(v8::Isolate* isolate) {
+  auto* inspector = debug::GetInspector(isolate); // TODO: what if null?
+  return static_cast<v8_inspector::V8InspectorImpl*>(inspector)->debugger();
+}
+
 std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
   Handle<Object> idObj = args.atOrUndefined(isolate, id);
 
@@ -1113,6 +1118,8 @@ std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
   if (value->IsString()) {
     v8::String::Utf8Value utf8(v8_isolate, value);
     result = *utf8 ? *utf8 : "Invalid UTF-8 string";
+  } else if (value->IsNull()) {
+    result = "";
   } else {
     Local<v8::String> jsonString;
     if (JSON::Stringify(v8_isolate->GetCurrentContext(), value).ToLocal(&jsonString)) {
@@ -1122,8 +1129,17 @@ std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
       result = "Unable to convert value to string.";
     }
   }
-
   return result;
+}
+
+bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
+  Handle<Object> idObj = args.atOrUndefined(isolate, id);
+  if (IsUndefined(*idObj, isolate)) return false;
+
+  Local<Value> value = Utils::ToLocal(idObj);
+  if (!value->IsBoolean()) return false;
+
+  return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
 }
 
 void InstallInto(Handle<Object> object, Local<v8::String> key, Local<Value> value, v8::Isolate* isolate) {
@@ -1185,7 +1201,8 @@ void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id,
 }
 
 BUILTIN(WaitCall) {
-  BuiltinsLog() << ++counter << " " << "WaitCall.started";
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " WaitCall.started";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1197,11 +1214,8 @@ BUILTIN(WaitCall) {
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   // Initiate internal silent wait pause via V8Debugger.
-  // TODO: what if null?
-  auto* inspector_impl = static_cast<v8_inspector::V8InspectorImpl*>(debug::GetInspector(v8_isolate));
-
   BuiltinsLog() << counter << " WaitCall.before_wait id=" << id << " thread=" << thread_id << std::endl;
-  inspector_impl->debugger()->waitCall(thread_id);
+  GetDebugger(v8_isolate)->waitCall(thread_id);
   BuiltinsLog() << counter << " WaitCall.after_wait id=" << id << " thread=" << thread_id << " value_code=" << idToType[id] << std::endl;
 
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
@@ -1213,12 +1227,14 @@ BUILTIN(WaitCall) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  BuiltinsLog() << counter << " " << "WaitCall.finished id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " WaitCall.finished id=" << id << std::endl;
   return *result;
 }
 
 BUILTIN(ResumeCall) {
-  BuiltinsLog() << ++counter << " " << "ResumeCall.started";
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " ResumeCall.started";
+
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
@@ -1228,28 +1244,26 @@ BUILTIN(ResumeCall) {
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  BuiltinsLog() << " id=" << id << " type=" << code;
+  BuiltinsLog() << " id=" << id << " thread=" << thread_id << " type=" << code;
   bool value_saved = SaveValue(id, value, code, v8_isolate);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
-  // TODO: what if null?
-  auto* inspector = static_cast<v8_inspector::V8InspectorImpl*>(debug::GetInspector(v8_isolate));
-
   BuiltinsLog() << counter << " ResumeCall.before_resume id=" << id << std::endl;
-  inspector->debugger()->resumeCall(thread_id);
+  GetDebugger(v8_isolate)->resumeCall(thread_id);
   BuiltinsLog() << counter << " ResumeCall.after_resume id=" << id << std::endl;
 
   auto result = value_saved
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
                     : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
 
-  BuiltinsLog() << counter << " ResumeCall.finished id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " ResumeCall.finished id=" << id << std::endl;
 
   return result;
 }
 
 BUILTIN(WaitType) {
-  BuiltinsLog() << ++counter << " " << "WaitType.started";
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " WaitType.started";
 
   HandleScope scope(isolate);
   DCHECK(isolate->IsOnCentralStack());
@@ -1275,13 +1289,14 @@ BUILTIN(WaitType) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  BuiltinsLog() << ++counter << " " << "WaitType.finished id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " WaitType.finished id=" << id << std::endl;
 
   return *result;
 }
 
 BUILTIN(ResumeType) {
-  BuiltinsLog() << ++counter << " " << "ResumeType.started";
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " " << "ResumeType.started";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1299,11 +1314,49 @@ BUILTIN(ResumeType) {
 
   SaveValue(id, object, code, v8_isolate);
 
-  auto result = ReadOnlyRoots(isolate).undefined_value();
+  BuiltinsLog() << my_counter << " " << "ResumeType.finished id=" << id << std::endl;
 
-  BuiltinsLog() << ++counter << " " << "ResumeType.finished id=" << id << std::endl;
+  return ReadOnlyRoots(isolate).undefined_value();
+}
 
-  return result;
+BUILTIN(IsThreadPaused) {
+  BuiltinsLog() << ++counter << " IsThreadPaused.entered";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string thread_id = IdToString(args, isolate, 1);
+  bool is_paused = GetDebugger(v8_isolate)->isThreadPaused(thread_id);
+
+  BuiltinsLog() << " thread=" << thread_id << " isPaused=" << is_paused << std::endl;
+
+  return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, is_paused));
+}
+
+BUILTIN(RunOnPaused) {
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " RunOnPaused.started";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string target_id = IdToString(args, isolate, 2);
+  std::string member_id = IdToString(args, isolate, 3);
+  std::string str_args = IdToString(args, isolate, 4);
+  std::string result_id = IdToString(args, isolate, 5);
+  bool is_async = IdToBool(args, isolate, 6);
+
+  BuiltinsLog() << " thread=" << thread_id
+    << " target=" << target_id
+    << " member=" << member_id
+    << std::endl;
+
+  GetDebugger(v8_isolate)->runOnPaused(
+    thread_id, target_id, member_id, str_args, result_id, is_async
+  );
+
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 BUILTIN(PluralRulesConstructor) {

@@ -25,6 +25,7 @@
 #include "src/inspector/v8-runtime-agent-impl.h"
 #include "src/inspector/v8-stack-trace-impl.h"
 #include "src/inspector/v8-value-utils.h"
+#include "src/debug/debug-interface.h"  // For StackTraceIterator/ScopeIterator
 
 namespace v8_inspector {
 
@@ -43,6 +44,8 @@ thread_local std::string t_thread_id;
 std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
+
+std::string g_task_target_id;
 
 #pragma clang diagnostic pop
 
@@ -520,7 +523,7 @@ void LogV8(const char* event, Args&&... args) {
   std::ofstream log(kLogPath, std::ios::app);
   if (!log.is_open()) return;
 
-  log << "event=" << event;
+  log << event;
   PairPrinter{log}(std::forward<Args>(args)...);
   log << '\n';
 }
@@ -550,7 +553,163 @@ void V8Debugger::handleProgramBreak(
     shared_cv cv = GetCV(t_thread_id);
     while (g_paused_thread_ids.contains(t_thread_id)) {
       cv->Wait(&g_state_mutex_);
+      if (g_task_target_id.length() != 0) {
+        LogV8("pretendRunOnPause", "target", g_task_target_id);
+        g_task_target_id = "";
+      }
     }
+
+    // const bool asked = v8::debug::IfComputeAsked();
+    // LogV8("handleProgramBreak", "asked", asked);
+    //
+    // // If an evaluation was requested (asked == true), invoke the extension
+    // // entry workerItems["Huaweinorm-extension:18"] with argument
+    // // { uri: { fsPath: "/home/kishmakov/Videos/html-example" } } if it is a function.
+    // // All activity is logged and no protocol pause/resume events are emitted.
+    // if (asked) {
+    //   v8::HandleScope handle_scope(m_isolate);
+    //   v8::TryCatch try_catch(m_isolate);
+    //   v8::Local<v8::Value> workerItemsValue;
+    //
+    //   { // Trying to get workerItems, walking through contexts starting from the top (paused)
+    //     // frame using public StackTraceIterator / ScopeIterator API.
+    //     auto stack_it = v8::debug::StackTraceIterator::Create(m_isolate);
+    //     if (!stack_it->Done()) {
+    //       auto scope_it = stack_it->GetScopeIterator();
+    //       for (; !scope_it->Done(); scope_it->Advance()) {
+    //         if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
+    //
+    //         v8::Local<v8::Object> scope_obj = scope_it->GetObject();
+    //         if (scope_obj.IsEmpty()) continue;
+    //
+    //         v8::Local<v8::Array> names;
+    //         if (!scope_obj->GetOwnPropertyNames(pausedContext).ToLocal(&names)) continue;
+    //
+    //         for (uint32_t i = 0; i < names->Length(); ++i) {
+    //           v8::Local<v8::Value> name;
+    //           if (!names->Get(pausedContext, i).ToLocal(&name)) continue;
+    //           v8::String::Utf8Value utf8_key(m_isolate, name);
+    //           // LogV8("scopeBinding",
+    //           //       "scopeType", scope_it->GetType(),
+    //           //       "name", *utf8_key ? *utf8_key : "<non-utf8>");
+    //
+    //           // Capture workerItems binding if present.
+    //           if (name->IsString() &&
+    //               name.As<v8::String>()->StringEquals(
+    //                   v8::String::NewFromUtf8Literal(m_isolate, "workerItems"))) {
+    //             v8::Local<v8::Value> candidate;
+    //             if (scope_obj->Get(pausedContext, name).ToLocal(&candidate)) {
+    //               workerItemsValue = candidate;
+    //               LogV8("scopeBinding.workerItemsFound", "scopeType", scope_it->GetType());
+    //             }
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    //
+    //   if (!workerItemsValue.IsEmpty() && !workerItemsValue->IsUndefined()) {
+    //     v8::Local<v8::String> mapEntryKey = v8::String::NewFromUtf8Literal(m_isolate, "Huaweinorm-extension:18");
+    //     v8::Local<v8::Value> funcCandidate;
+    //     bool gotEntry = false;
+    //     if (workerItemsValue->IsMap()) {
+    //       v8::Local<v8::Map> mapObj = workerItemsValue.As<v8::Map>();
+    //       if (mapObj->Get(pausedContext, mapEntryKey).ToLocal(&funcCandidate)) {
+    //         gotEntry = true;
+    //         LogV8("computeAskedWorkerInvoke", "stage", "mapEntryRetrieved");
+    //       }
+    //     } else if (workerItemsValue->IsObject()) {
+    //       v8::Local<v8::Object> obj = workerItemsValue.As<v8::Object>();
+    //       if (obj->Get(pausedContext, mapEntryKey).ToLocal(&funcCandidate)) {
+    //         gotEntry = true;
+    //         LogV8("computeAskedWorkerInvoke", "stage", "objectPropertyRetrieved");
+    //       }
+    //     } else {
+    //       v8::String::Utf8Value type_utf8(m_isolate, workerItemsValue->TypeOf(m_isolate));
+    //       LogV8("computeAskedWorkerInvoke", "stage", "workerItemsNotMapOrObject", "type", *type_utf8);
+    //     }
+    //
+    //     if (!gotEntry) {
+    //       if (try_catch.HasCaught()) {
+    //         v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
+    //         LogV8("computeAskedWorkerInvoke", "stage", "entryLookupException", "exception", *msg ? *msg : "<unknown>");
+    //       } else {
+    //         LogV8("computeAskedWorkerInvoke", "stage", "entryMissing");
+    //       }
+    //     } else if (!funcCandidate->IsFunction()) {
+    //       v8::String::Utf8Value type_utf8(m_isolate, funcCandidate->TypeOf(m_isolate));
+    //         LogV8("computeAskedWorkerInvoke", "stage", "entryNotFunction", "jsType", *type_utf8);
+    //     } else {
+    //       // Build argument: { uri: { fsPath: "/home/kishmakov/Videos/html-example" } }
+    //       v8::Local<v8::Object> argRoot = v8::Object::New(m_isolate);
+    //       v8::Local<v8::Object> uriObj = v8::Object::New(m_isolate);
+    //       v8::Local<v8::String> uriKey = v8::String::NewFromUtf8Literal(m_isolate, "uri");
+    //       v8::Local<v8::String> fsPathKey = v8::String::NewFromUtf8Literal(m_isolate, "fsPath");
+    //       v8::Local<v8::String> fsPathValue = v8::String::NewFromUtf8Literal(m_isolate, "/home/kishmakov/Videos/html-example");
+    //
+    //       bool ok = uriObj->CreateDataProperty(pausedContext, fsPathKey, fsPathValue).FromMaybe(false) &&
+    //                 argRoot->CreateDataProperty(pausedContext, uriKey, uriObj).FromMaybe(false);
+    //       if (!ok) {
+    //         LogV8("computeAskedWorkerInvoke", "stage", "argConstructionFailed");
+    //       } else {
+    //         v8::Local<v8::Function> fn = funcCandidate.As<v8::Function>();
+    //         v8::Local<v8::Value> argv[1] = {argRoot};
+    //         v8::Local<v8::Value> callResult;
+    //         if (!fn->Call(pausedContext, v8::Undefined(m_isolate), 1, argv).ToLocal(&callResult)) {
+    //           if (try_catch.HasCaught()) {
+    //             v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callException", "exception", *msg ? *msg : "<unknown>");
+    //           } else {
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callFailedUnknown");
+    //           }
+    //         } else {
+    //           if (callResult->IsPromise()) {
+    //             v8::Local<v8::Promise> p = callResult.As<v8::Promise>();
+    //             switch (p->State()) {
+    //               case v8::Promise::kPending:
+    //                 LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "pending");
+    //                 break;
+    //               case v8::Promise::kFulfilled: {
+    //                 v8::Local<v8::Value> v = p->Result();
+    //                 if (v->IsString()) {
+    //                   v8::String::Utf8Value s(m_isolate, v);
+    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultStr", *s ? *s : "");
+    //                 } else if (v->IsNumber()) {
+    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultNum", v.As<v8::Number>()->Value());
+    //                 } else {
+    //                   v8::String::Utf8Value type_utf8(m_isolate, v->TypeOf(m_isolate));
+    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultType", *type_utf8);
+    //                 }
+    //                 break; }
+    //               case v8::Promise::kRejected: {
+    //                 v8::Local<v8::Value> r = p->Result();
+    //                 if (r->IsString()) {
+    //                   v8::String::Utf8Value s(m_isolate, r);
+    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "rejected", "reasonStr", *s ? *s : "");
+    //                 } else {
+    //                   v8::String::Utf8Value type_utf8(m_isolate, r->TypeOf(m_isolate));
+    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "rejected", "reasonType", *type_utf8);
+    //                 }
+    //                 break; }
+    //             }
+    //           } else if (callResult->IsString()) {
+    //             v8::String::Utf8Value s(m_isolate, callResult);
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultStr", *s ? *s : "");
+    //           } else if (callResult->IsNumber()) {
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultNum", callResult.As<v8::Number>()->Value());
+    //           } else if (callResult->IsUndefined() || callResult->IsNull()) {
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "result", "void");
+    //           } else {
+    //             v8::String::Utf8Value type_utf8(m_isolate, callResult->TypeOf(m_isolate));
+    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultType", *type_utf8);
+    //           }
+    //         }
+    //       }
+    //     }
+    //   } else {
+    //     LogV8("computeAskedWorkerInvoke", "stage", "workerItemsUndefined");
+    //   }
+    // }
 
     m_targetContextGroupId = 0;
     return;
@@ -1502,16 +1661,16 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
 }
 
 void V8Debugger::waitCall(const std::string& thread_id) {
-  LogV8("waitCall.enter", "thread_id", thread_id.c_str());
+  LogV8("waitCall.enter", "thread_id", thread_id);
   if (!enabled()) return;
 
   if (!isPaused()) {
     v8::base::MutexGuard guard(&g_state_mutex_);
     t_thread_id = thread_id;
     g_paused_thread_ids.insert(thread_id);
-    LogV8("waitCall.initiate_stop", "thread_id", thread_id.c_str());
+    LogV8("waitCall.initiate_stop", "thread_id", thread_id);
   } else {
-    LogV8("waitCall.skip_already_paused", "thread_id", thread_id.c_str());
+    LogV8("waitCall.skip_already_paused", "thread_id", thread_id);
     return;  // ignore nested or concurrent
   }
 
@@ -1527,7 +1686,7 @@ void V8Debugger::waitCall(const std::string& thread_id) {
 }
 
 void V8Debugger::resumeCall(const std::string& thread_id) {
-  LogV8("resumeCall.enter", "thread_id", thread_id.c_str());
+  LogV8("resumeCall.enter", "thread_id", thread_id);
   if (!enabled()) return;
 
   {
@@ -1537,7 +1696,37 @@ void V8Debugger::resumeCall(const std::string& thread_id) {
     cv->NotifyAll();
   }
 
-  LogV8("resumeCall.signaled", "thread_id", thread_id.c_str());
+  LogV8("resumeCall.signaled", "thread_id", thread_id);
 }
 
+bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
+  bool result = false;
+  if (enabled()) {
+    v8::base::MutexGuard guard(&g_state_mutex_);
+    result = g_paused_thread_ids.contains(thread_id);
+  }
+
+  LogV8("isThreadPaused.enter", "thread_id", thread_id, "result", result);
+  return result;
+}
+
+void V8Debugger::runOnPaused(const std::string& thread_id,
+                             const std::string& target_id,
+                             const std::string& member_id,
+                             const std::string& args_json,
+                             const std::string& result_id,
+                             bool is_async) {
+  if (!enabled()) return;
+
+  LogV8("runOnPaused.enter", "thread_id", thread_id);
+
+  g_task_target_id = target_id;
+
+  auto cv = GetCV(thread_id);
+  cv->NotifyAll();
+}
+
+
+
 }  // namespace v8_inspector
+
