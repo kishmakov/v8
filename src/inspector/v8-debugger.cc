@@ -45,7 +45,11 @@ std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
 
-std::string g_task_target_id;
+std::string g_task_target_id = "";
+std::string g_task_member_id = "";
+std::string g_task_args_json = "";
+std::string g_task_result_id = "";
+bool g_task_is_async = false;
 
 #pragma clang diagnostic pop
 
@@ -528,7 +532,113 @@ void LogV8(const char* event, Args&&... args) {
   log << '\n';
 }
 
+v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
+  if (value.empty()) return v8::Null(isolate);
+
+  return v8::String::NewFromUtf8(
+      isolate, value.c_str(), v8::NewStringType::kNormal, static_cast<int>(value.size())
+    ).ToLocalChecked();
+}
+
+v8::Local<v8::Value> GetV8GlobalContext(v8::Isolate* isolate, v8::Local<v8::Context> context) {
+  auto stack_it = v8::debug::StackTraceIterator::Create(isolate);
+  if (stack_it->Done()) return v8::Undefined(isolate);
+
+  v8::Local<v8::String> v8_name = v8::String::NewFromUtf8Literal(isolate, "context");
+
+  auto scope_it = stack_it->GetScopeIterator();
+  for (; !scope_it->Done(); scope_it->Advance()) {
+    if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
+
+    v8::Local<v8::Object> scope_obj = scope_it->GetObject();
+    if (scope_obj.IsEmpty()) continue;
+
+    v8::Local<v8::Array> names;
+    if (!scope_obj->GetOwnPropertyNames(context).ToLocal(&names)) continue;
+
+    for (uint32_t i = 0; i < names->Length(); ++i) { // TODO: optimize away
+      v8::Local<v8::Value> name_candidate;
+      if (!names->Get(context, i).ToLocal(&name_candidate)) continue;
+      v8::String::Utf8Value utf8_key(isolate, name_candidate);
+      // LogV8("scopeBinding",
+      //       "scopeType", scope_it->GetType(),
+      //       "name", *utf8_key ? *utf8_key : "<non-utf8>");
+
+      if (name_candidate->IsString() && name_candidate.As<v8::String>()->StringEquals(v8_name)) {
+        v8::Local<v8::Value> result;
+        if (scope_obj->Get(context, name_candidate).ToLocal(&result)) {
+          return result;
+        }
+      }
+    }
+  }
+
+  return v8::Undefined(isolate);
+}
+
+v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context) {
+  v8::Local<v8::Value> context_value = GetV8GlobalContext(v8_isolate, v8_context);
+
+  if (context_value->IsUndefined() || !context_value->IsObject()) {
+    LogV8("GetCallFunction", "failed to locate context");
+    return v8::Undefined(v8_isolate);
+  }
+
+  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "doCallWorkerFunction");
+  v8::Local<v8::Value> function_value;
+
+  if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
+    LogV8("processTaskOnStack", "failed to locate context.doCallWorkerFunction");
+    return v8::Undefined(v8_isolate);;
+  }
+
+  if (function_value->IsUndefined() || !function_value->IsFunction()) {
+    LogV8("processTaskOnStack", "context.doCallWorkerFunction is not a function");
+    return v8::Undefined(v8_isolate);;
+  }
+
+  return function_value;
+}
+
 }  // namespace
+
+void V8Debugger::processTaskOnStack() const {
+  LogV8("processTaskOnStack", "target", g_task_target_id,
+    "member", g_task_member_id, "is_async", g_task_is_async,
+    "result", g_task_result_id);
+
+  std::string target_id = g_task_target_id;
+  g_task_target_id = "";
+
+  v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
+
+  v8::HandleScope handle_scope(m_isolate);
+  v8::TryCatch try_catch(m_isolate);
+
+  v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context);
+  if (call_function_candidate->IsUndefined()) return;
+
+  v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
+
+  v8::Local<v8::Value> v8_target = cppToV8(m_isolate, target_id);
+  v8::Local<v8::Value> v8_member = cppToV8(m_isolate, g_task_member_id);
+  v8::Local<v8::Value> v8_args = cppToV8(m_isolate, g_task_args_json);
+  v8::Local<v8::Value> v8_result = cppToV8(m_isolate, g_task_result_id);
+  v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, g_task_is_async);
+
+  v8::Local<v8::Value> argv[5] = {v8_target, v8_member, v8_args, v8_result, v8_async};
+
+  v8::MaybeLocal<v8::Value> call_result = call_function->Call(v8_context, v8_context->Global(), 5, argv);
+
+  if (try_catch.HasCaught() || call_result.IsEmpty()) {
+    v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
+    LogV8("processTaskOnStack",
+      "failed to call", "doCallWorkerFunction",
+      "exception", *msg ? *msg : "<unknown>");
+  } else {
+    LogV8("processTaskOnStack", "successfully finished" );
+  }
+}
 
 void V8Debugger::handleProgramBreak(
     v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
@@ -553,163 +663,10 @@ void V8Debugger::handleProgramBreak(
     shared_cv cv = GetCV(t_thread_id);
     while (g_paused_thread_ids.contains(t_thread_id)) {
       cv->Wait(&g_state_mutex_);
-      if (g_task_target_id.length() != 0) {
-        LogV8("pretendRunOnPause", "target", g_task_target_id);
-        g_task_target_id = "";
+      if (!g_task_target_id.empty()) {
+        processTaskOnStack();
       }
     }
-
-    // const bool asked = v8::debug::IfComputeAsked();
-    // LogV8("handleProgramBreak", "asked", asked);
-    //
-    // // If an evaluation was requested (asked == true), invoke the extension
-    // // entry workerItems["Huaweinorm-extension:18"] with argument
-    // // { uri: { fsPath: "/home/kishmakov/Videos/html-example" } } if it is a function.
-    // // All activity is logged and no protocol pause/resume events are emitted.
-    // if (asked) {
-    //   v8::HandleScope handle_scope(m_isolate);
-    //   v8::TryCatch try_catch(m_isolate);
-    //   v8::Local<v8::Value> workerItemsValue;
-    //
-    //   { // Trying to get workerItems, walking through contexts starting from the top (paused)
-    //     // frame using public StackTraceIterator / ScopeIterator API.
-    //     auto stack_it = v8::debug::StackTraceIterator::Create(m_isolate);
-    //     if (!stack_it->Done()) {
-    //       auto scope_it = stack_it->GetScopeIterator();
-    //       for (; !scope_it->Done(); scope_it->Advance()) {
-    //         if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
-    //
-    //         v8::Local<v8::Object> scope_obj = scope_it->GetObject();
-    //         if (scope_obj.IsEmpty()) continue;
-    //
-    //         v8::Local<v8::Array> names;
-    //         if (!scope_obj->GetOwnPropertyNames(pausedContext).ToLocal(&names)) continue;
-    //
-    //         for (uint32_t i = 0; i < names->Length(); ++i) {
-    //           v8::Local<v8::Value> name;
-    //           if (!names->Get(pausedContext, i).ToLocal(&name)) continue;
-    //           v8::String::Utf8Value utf8_key(m_isolate, name);
-    //           // LogV8("scopeBinding",
-    //           //       "scopeType", scope_it->GetType(),
-    //           //       "name", *utf8_key ? *utf8_key : "<non-utf8>");
-    //
-    //           // Capture workerItems binding if present.
-    //           if (name->IsString() &&
-    //               name.As<v8::String>()->StringEquals(
-    //                   v8::String::NewFromUtf8Literal(m_isolate, "workerItems"))) {
-    //             v8::Local<v8::Value> candidate;
-    //             if (scope_obj->Get(pausedContext, name).ToLocal(&candidate)) {
-    //               workerItemsValue = candidate;
-    //               LogV8("scopeBinding.workerItemsFound", "scopeType", scope_it->GetType());
-    //             }
-    //           }
-    //         }
-    //       }
-    //     }
-    //   }
-    //
-    //   if (!workerItemsValue.IsEmpty() && !workerItemsValue->IsUndefined()) {
-    //     v8::Local<v8::String> mapEntryKey = v8::String::NewFromUtf8Literal(m_isolate, "Huaweinorm-extension:18");
-    //     v8::Local<v8::Value> funcCandidate;
-    //     bool gotEntry = false;
-    //     if (workerItemsValue->IsMap()) {
-    //       v8::Local<v8::Map> mapObj = workerItemsValue.As<v8::Map>();
-    //       if (mapObj->Get(pausedContext, mapEntryKey).ToLocal(&funcCandidate)) {
-    //         gotEntry = true;
-    //         LogV8("computeAskedWorkerInvoke", "stage", "mapEntryRetrieved");
-    //       }
-    //     } else if (workerItemsValue->IsObject()) {
-    //       v8::Local<v8::Object> obj = workerItemsValue.As<v8::Object>();
-    //       if (obj->Get(pausedContext, mapEntryKey).ToLocal(&funcCandidate)) {
-    //         gotEntry = true;
-    //         LogV8("computeAskedWorkerInvoke", "stage", "objectPropertyRetrieved");
-    //       }
-    //     } else {
-    //       v8::String::Utf8Value type_utf8(m_isolate, workerItemsValue->TypeOf(m_isolate));
-    //       LogV8("computeAskedWorkerInvoke", "stage", "workerItemsNotMapOrObject", "type", *type_utf8);
-    //     }
-    //
-    //     if (!gotEntry) {
-    //       if (try_catch.HasCaught()) {
-    //         v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
-    //         LogV8("computeAskedWorkerInvoke", "stage", "entryLookupException", "exception", *msg ? *msg : "<unknown>");
-    //       } else {
-    //         LogV8("computeAskedWorkerInvoke", "stage", "entryMissing");
-    //       }
-    //     } else if (!funcCandidate->IsFunction()) {
-    //       v8::String::Utf8Value type_utf8(m_isolate, funcCandidate->TypeOf(m_isolate));
-    //         LogV8("computeAskedWorkerInvoke", "stage", "entryNotFunction", "jsType", *type_utf8);
-    //     } else {
-    //       // Build argument: { uri: { fsPath: "/home/kishmakov/Videos/html-example" } }
-    //       v8::Local<v8::Object> argRoot = v8::Object::New(m_isolate);
-    //       v8::Local<v8::Object> uriObj = v8::Object::New(m_isolate);
-    //       v8::Local<v8::String> uriKey = v8::String::NewFromUtf8Literal(m_isolate, "uri");
-    //       v8::Local<v8::String> fsPathKey = v8::String::NewFromUtf8Literal(m_isolate, "fsPath");
-    //       v8::Local<v8::String> fsPathValue = v8::String::NewFromUtf8Literal(m_isolate, "/home/kishmakov/Videos/html-example");
-    //
-    //       bool ok = uriObj->CreateDataProperty(pausedContext, fsPathKey, fsPathValue).FromMaybe(false) &&
-    //                 argRoot->CreateDataProperty(pausedContext, uriKey, uriObj).FromMaybe(false);
-    //       if (!ok) {
-    //         LogV8("computeAskedWorkerInvoke", "stage", "argConstructionFailed");
-    //       } else {
-    //         v8::Local<v8::Function> fn = funcCandidate.As<v8::Function>();
-    //         v8::Local<v8::Value> argv[1] = {argRoot};
-    //         v8::Local<v8::Value> callResult;
-    //         if (!fn->Call(pausedContext, v8::Undefined(m_isolate), 1, argv).ToLocal(&callResult)) {
-    //           if (try_catch.HasCaught()) {
-    //             v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callException", "exception", *msg ? *msg : "<unknown>");
-    //           } else {
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callFailedUnknown");
-    //           }
-    //         } else {
-    //           if (callResult->IsPromise()) {
-    //             v8::Local<v8::Promise> p = callResult.As<v8::Promise>();
-    //             switch (p->State()) {
-    //               case v8::Promise::kPending:
-    //                 LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "pending");
-    //                 break;
-    //               case v8::Promise::kFulfilled: {
-    //                 v8::Local<v8::Value> v = p->Result();
-    //                 if (v->IsString()) {
-    //                   v8::String::Utf8Value s(m_isolate, v);
-    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultStr", *s ? *s : "");
-    //                 } else if (v->IsNumber()) {
-    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultNum", v.As<v8::Number>()->Value());
-    //                 } else {
-    //                   v8::String::Utf8Value type_utf8(m_isolate, v->TypeOf(m_isolate));
-    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "fulfilled", "resultType", *type_utf8);
-    //                 }
-    //                 break; }
-    //               case v8::Promise::kRejected: {
-    //                 v8::Local<v8::Value> r = p->Result();
-    //                 if (r->IsString()) {
-    //                   v8::String::Utf8Value s(m_isolate, r);
-    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "rejected", "reasonStr", *s ? *s : "");
-    //                 } else {
-    //                   v8::String::Utf8Value type_utf8(m_isolate, r->TypeOf(m_isolate));
-    //                   LogV8("computeAskedWorkerInvoke", "stage", "callPromise", "state", "rejected", "reasonType", *type_utf8);
-    //                 }
-    //                 break; }
-    //             }
-    //           } else if (callResult->IsString()) {
-    //             v8::String::Utf8Value s(m_isolate, callResult);
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultStr", *s ? *s : "");
-    //           } else if (callResult->IsNumber()) {
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultNum", callResult.As<v8::Number>()->Value());
-    //           } else if (callResult->IsUndefined() || callResult->IsNull()) {
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "result", "void");
-    //           } else {
-    //             v8::String::Utf8Value type_utf8(m_isolate, callResult->TypeOf(m_isolate));
-    //             LogV8("computeAskedWorkerInvoke", "stage", "callReturn", "resultType", *type_utf8);
-    //           }
-    //         }
-    //       }
-    //     }
-    //   } else {
-    //     LogV8("computeAskedWorkerInvoke", "stage", "workerItemsUndefined");
-    //   }
-    // }
 
     m_targetContextGroupId = 0;
     return;
@@ -1721,12 +1678,14 @@ void V8Debugger::runOnPaused(const std::string& thread_id,
   LogV8("runOnPaused.enter", "thread_id", thread_id);
 
   g_task_target_id = target_id;
+  g_task_member_id = member_id;
+  g_task_args_json = args_json;
+  g_task_result_id = result_id;
+  g_task_is_async = is_async;
 
   auto cv = GetCV(thread_id);
   cv->NotifyAll();
 }
-
-
 
 }  // namespace v8_inspector
 
