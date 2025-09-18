@@ -1215,6 +1215,21 @@ Handle<Object> CreateCallResult(Isolate* isolate, const std::string& id) {
   return result;
 }
 
+Handle<Object> CreateCallResult(Isolate* isolate, const bool value) {
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, 2);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  InstallInto(result, keySimpleValue, v8::Boolean::New(v8_isolate, value), v8_isolate);
+
+  return result;
+}
+
 BUILTIN(WaitCall) {
   int my_counter = ++counter;
   BuiltinsLog() << my_counter << " WaitCall.1/4";
@@ -1350,12 +1365,12 @@ BUILTIN(RunOnPaused) {
     << " str_args=" << str_args
     << std::endl;
 
-  GetDebugger(v8_isolate)->runOnPaused(
+  bool result = GetDebugger(v8_isolate)->runOnPaused(
     thread_id, target_id, member_id, str_args, result_id, is_async
   );
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2" << std::endl;
-  return ReadOnlyRoots(isolate).undefined_value();
+  return *CreateCallResult(isolate, result);
 }
 
 BUILTIN(PluralRulesConstructor) {

@@ -38,7 +38,11 @@ static const size_t kMaxAsyncTaskStacks = 8 * 1024;
 static const size_t kMaxExternalParents = 1 * 1024;
 static const int kNoBreakpointId = 0;
 
-v8::base::Mutex g_state_mutex_;
+v8::base::Mutex g_main_mutex;
+v8::base::ConditionVariable g_main_cv;
+bool g_result = false;
+
+v8::base::Mutex g_state_mutex;
 thread_local std::string t_thread_id;
 
 std::unordered_set<std::string> g_paused_thread_ids;
@@ -600,6 +604,22 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   return function_value;
 }
 
+// Helpers to log V8 values.
+std::string V8ValueTypeName(v8::Local<v8::Value> v) {
+  if (v->IsUndefined()) return "undefined";
+  if (v->IsNull()) return "null";
+  if (v->IsBoolean()) return "boolean";
+  if (v->IsNumber()) return "number";
+  if (v->IsBigInt()) return "bigint";
+  if (v->IsString()) return "string";
+  if (v->IsSymbol()) return "symbol";
+  if (v->IsFunction()) return "function";
+  if (v->IsArray()) return "array";
+  if (v->IsPromise()) return "promise";
+  if (v->IsObject()) return "object";
+  return "unknown";
+}
+
 }  // namespace
 
 void V8Debugger::processTaskOnStack() const {
@@ -636,8 +656,17 @@ void V8Debugger::processTaskOnStack() const {
       "failed to call", "doCallWorkerFunction",
       "exception", *msg ? *msg : "<unknown>");
   } else {
-    LogV8("processTaskOnStack", "successfully finished" );
+    v8::Local<v8::Value> value = call_result.ToLocalChecked();
+    LogV8("processTaskOnStack",
+      "successfully", "finished",
+      "type", V8ValueTypeName(value));
+
+    if (value->IsBoolean()) {
+      g_result = value.As<v8::Boolean>()->Value();
+    }
   }
+
+  g_main_cv.NotifyAll();
 }
 
 void V8Debugger::handleProgramBreak(
@@ -658,11 +687,11 @@ void V8Debugger::handleProgramBreak(
   // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
     v8::Context::Scope scope(pausedContext);
-    v8::base::MutexGuard guard(&g_state_mutex_);
+    v8::base::MutexGuard guard(&g_state_mutex);
 
     shared_cv cv = GetCV(t_thread_id);
     while (g_paused_thread_ids.contains(t_thread_id)) {
-      cv->Wait(&g_state_mutex_);
+      cv->Wait(&g_state_mutex);
       if (!g_task_target_id.empty()) {
         processTaskOnStack();
       }
@@ -1622,7 +1651,7 @@ void V8Debugger::waitCall(const std::string& thread_id) {
   if (!enabled()) return;
 
   if (!isPaused()) {
-    v8::base::MutexGuard guard(&g_state_mutex_);
+    v8::base::MutexGuard guard(&g_state_mutex);
     t_thread_id = thread_id;
     g_paused_thread_ids.insert(thread_id);
     LogV8("waitCall.initiate_stop", "thread_id", thread_id);
@@ -1647,7 +1676,7 @@ void V8Debugger::resumeCall(const std::string& thread_id) {
   if (!enabled()) return;
 
   {
-    v8::base::MutexGuard guard(&g_state_mutex_);
+    v8::base::MutexGuard guard(&g_state_mutex);
     g_paused_thread_ids.erase(thread_id);
     shared_cv cv = GetCV(thread_id);
     cv->NotifyAll();
@@ -1659,7 +1688,7 @@ void V8Debugger::resumeCall(const std::string& thread_id) {
 bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
   bool result = false;
   if (enabled()) {
-    v8::base::MutexGuard guard(&g_state_mutex_);
+    v8::base::MutexGuard guard(&g_state_mutex);
     result = g_paused_thread_ids.contains(thread_id);
   }
 
@@ -1667,13 +1696,13 @@ bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
   return result;
 }
 
-void V8Debugger::runOnPaused(const std::string& thread_id,
+bool V8Debugger::runOnPaused(const std::string& thread_id,
                              const std::string& target_id,
                              const std::string& member_id,
                              const std::string& args_json,
                              const std::string& result_id,
                              bool is_async) {
-  if (!enabled()) return;
+  if (!enabled()) return false;
 
   LogV8("runOnPaused.enter", "thread_id", thread_id);
 
@@ -1685,6 +1714,16 @@ void V8Debugger::runOnPaused(const std::string& thread_id,
 
   auto cv = GetCV(thread_id);
   cv->NotifyAll();
+
+  v8::base::MutexGuard guard(&g_main_mutex);
+  while (!g_task_target_id.empty()) {
+    g_main_cv.Wait(&g_main_mutex);
+  }
+
+  bool result = g_result;
+  g_result = false;
+
+  return result;
 }
 
 }  // namespace v8_inspector

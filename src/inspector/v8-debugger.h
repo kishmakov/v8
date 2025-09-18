@@ -82,7 +82,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void waitCall(const std::string& thread_id);
   void resumeCall(const std::string& thread_id);
   bool isThreadPaused(const std::string& thread_id) const;
-  void runOnPaused(const std::string& thread_id,
+  bool runOnPaused(const std::string& thread_id,
                    const std::string& target_id,
                    const std::string& member_id,
                    const std::string& args_json,
