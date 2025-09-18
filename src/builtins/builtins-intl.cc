@@ -1207,16 +1207,16 @@ BUILTIN(WaitCall) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = IdToString(args, isolate, 1);
-  std::string thread_id = IdToString(args, isolate, 2);
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 2);
 
   BuiltinsLog() << " id=" << id << std::endl;
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   // Initiate internal silent wait pause via V8Debugger.
-  BuiltinsLog() << counter << " WaitCall.before_wait id=" << id << " thread=" << thread_id << std::endl;
+  BuiltinsLog() << my_counter << " WaitCall.before_wait id=" << id << " thread=" << thread_id << std::endl;
   GetDebugger(v8_isolate)->waitCall(thread_id);
-  BuiltinsLog() << counter << " WaitCall.after_wait id=" << id << " thread=" << thread_id << " value_code=" << idToType[id] << std::endl;
+  BuiltinsLog() << my_counter << " WaitCall.after_wait id=" << id << " thread=" << thread_id << " value_code=" << idToType[id] << std::endl;
 
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
 
@@ -1238,19 +1238,19 @@ BUILTIN(ResumeCall) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = IdToString(args, isolate, 1);
-  std::string thread_id = IdToString(args, isolate, 2);
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 2);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  BuiltinsLog() << " id=" << id << " thread=" << thread_id << " type=" << code;
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code;
   bool value_saved = SaveValue(id, value, code, v8_isolate);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
-  BuiltinsLog() << counter << " ResumeCall.before_resume id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " ResumeCall.before_resume id=" << id << std::endl;
   GetDebugger(v8_isolate)->resumeCall(thread_id);
-  BuiltinsLog() << counter << " ResumeCall.after_resume id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " ResumeCall.after_resume id=" << id << std::endl;
 
   auto result = value_saved
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
@@ -1269,13 +1269,12 @@ BUILTIN(WaitType) {
   DCHECK(isolate->IsOnCentralStack());
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = IdToString(args, isolate, 1);
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 2);
 
-  BuiltinsLog() << " id=" << id << std::endl;
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
 
-  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
-
-  shared_cv cv = GetCV(id);
+  shared_cv cv = GetCV(thread_id);
   std::unique_lock<std::mutex> lock(mtx);
   cv->wait(lock, [id] { return idToType.contains(id); });
   DCHECK(isolate->IsOnCentralStack());
@@ -1289,8 +1288,7 @@ BUILTIN(WaitType) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  BuiltinsLog() << my_counter << " WaitType.finished id=" << id << std::endl;
-
+  BuiltinsLog() << my_counter << " WaitType.finished thread=" << thread_id << std::endl;
   return *result;
 }
 
@@ -1301,20 +1299,22 @@ BUILTIN(ResumeType) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string id = IdToString(args, isolate, 1);
-  Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 2));
-  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 2);
+
+  Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
   int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
 
-  BuiltinsLog() << " id=" << id << " code=" << code << std::endl;
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code << std::endl;
 
-  shared_cv cv = GetCV(id);
+  shared_cv cv = GetCV(thread_id);
   std::lock_guard<std::mutex> lock(mtx);
   cv->notify_one();
 
   SaveValue(id, object, code, v8_isolate);
 
-  BuiltinsLog() << my_counter << " " << "ResumeType.finished id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " " << "ResumeType.finished thread=" << thread_id << std::endl;
 
   return ReadOnlyRoots(isolate).undefined_value();
 }
@@ -1350,6 +1350,7 @@ BUILTIN(RunOnPaused) {
   BuiltinsLog() << " thread=" << thread_id
     << " target=" << target_id
     << " member=" << member_id
+    << " str_args=" << str_args
     << std::endl;
 
   GetDebugger(v8_isolate)->runOnPaused(
