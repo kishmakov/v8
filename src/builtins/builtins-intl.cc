@@ -1200,23 +1200,8 @@ void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id,
   idToType.erase(id);
 }
 
-BUILTIN(WaitCall) {
-  int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitCall.started";
-
-  HandleScope scope(isolate);
+Handle<Object> CreateCallResult(Isolate* isolate, const std::string& id) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  std::string thread_id = IdToString(args, isolate, 1);
-  std::string id = IdToString(args, isolate, 2);
-
-  BuiltinsLog() << " id=" << id << std::endl;
-  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
-
-  // Initiate internal silent wait pause via V8Debugger.
-  BuiltinsLog() << my_counter << " WaitCall.before_wait id=" << id << " thread=" << thread_id << std::endl;
-  GetDebugger(v8_isolate)->waitCall(thread_id);
-  BuiltinsLog() << my_counter << " WaitCall.after_wait id=" << id << " thread=" << thread_id << " value_code=" << idToType[id] << std::endl;
 
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
 
@@ -1227,13 +1212,36 @@ BUILTIN(WaitCall) {
   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
   ReadValue(result, keySimpleValue, id, v8_isolate);
 
-  BuiltinsLog() << my_counter << " WaitCall.finished id=" << id << std::endl;
+  return result;
+}
+
+BUILTIN(WaitCall) {
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " WaitCall.1/4";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string id = IdToString(args, isolate, 2);
+
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
+
+  // Initiate internal silent wait pause via V8Debugger.
+  BuiltinsLog() << my_counter << " WaitCall.2/4" << std::endl;
+  GetDebugger(v8_isolate)->waitCall(thread_id);
+  BuiltinsLog() << my_counter << " WaitCall.3/4 value_code=" << idToType[id] << std::endl;
+
+  Handle<Object> result = CreateCallResult(isolate, id);
+
+  BuiltinsLog() << my_counter << " WaitCall.4/4" << std::endl;
   return *result;
 }
 
 BUILTIN(ResumeCall) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " ResumeCall.started";
+  BuiltinsLog() << my_counter << " ResumeCall.1/4";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1248,26 +1256,24 @@ BUILTIN(ResumeCall) {
   bool value_saved = SaveValue(id, value, code, v8_isolate);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
-  BuiltinsLog() << my_counter << " ResumeCall.before_resume id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " ResumeCall.2/4" << std::endl;
   GetDebugger(v8_isolate)->resumeCall(thread_id);
-  BuiltinsLog() << my_counter << " ResumeCall.after_resume id=" << id << std::endl;
+  BuiltinsLog() << my_counter << " ResumeCall.3/4" << std::endl;
 
   auto result = value_saved
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
                     : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
 
-  BuiltinsLog() << my_counter << " ResumeCall.finished id=" << id << std::endl;
-
+  BuiltinsLog() << my_counter << " ResumeCall.4/4" << std::endl;
   return result;
 }
 
 BUILTIN(WaitType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitType.started";
+  BuiltinsLog() << my_counter << " WaitType.1/2";
 
   HandleScope scope(isolate);
   DCHECK(isolate->IsOnCentralStack());
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
@@ -1279,22 +1285,15 @@ BUILTIN(WaitType) {
   cv->wait(lock, [id] { return idToType.contains(id); });
   DCHECK(isolate->IsOnCentralStack());
 
-  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+  Handle<Object> result = CreateCallResult(isolate, id);
 
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
-  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-  InstallInto(result, keyCode, valueCode, v8_isolate);
-
-  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
-  ReadValue(result, keySimpleValue, id, v8_isolate);
-
-  BuiltinsLog() << my_counter << " WaitType.finished thread=" << thread_id << std::endl;
+  BuiltinsLog() << my_counter << " WaitType.2/2" << std::endl;
   return *result;
 }
 
 BUILTIN(ResumeType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " " << "ResumeType.started";
+  BuiltinsLog() << my_counter << " ResumeType.1/2";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1314,13 +1313,12 @@ BUILTIN(ResumeType) {
 
   SaveValue(id, object, code, v8_isolate);
 
-  BuiltinsLog() << my_counter << " " << "ResumeType.finished thread=" << thread_id << std::endl;
-
+  BuiltinsLog() << my_counter << " ResumeType.2/2" << std::endl;
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
 BUILTIN(IsThreadPaused) {
-  BuiltinsLog() << ++counter << " IsThreadPaused.entered";
+  BuiltinsLog() << ++counter << " IsThreadPaused.1/1";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1328,14 +1326,13 @@ BUILTIN(IsThreadPaused) {
   std::string thread_id = IdToString(args, isolate, 1);
   bool is_paused = GetDebugger(v8_isolate)->isThreadPaused(thread_id);
 
-  BuiltinsLog() << " thread=" << thread_id << " isPaused=" << is_paused << std::endl;
-
+  BuiltinsLog() << " thread=" << thread_id << " paused=" << is_paused << std::endl;
   return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, is_paused));
 }
 
 BUILTIN(RunOnPaused) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " RunOnPaused.started";
+  BuiltinsLog() << my_counter << " RunOnPaused.1/2";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1357,6 +1354,7 @@ BUILTIN(RunOnPaused) {
     thread_id, target_id, member_id, str_args, result_id, is_async
   );
 
+  BuiltinsLog() << my_counter << " RunOnPaused.2/2" << std::endl;
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
