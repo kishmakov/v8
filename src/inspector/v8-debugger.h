@@ -66,6 +66,7 @@ V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate);
 struct V8ExecutionResult {
   V8TypeCode type;
   bool boolValue;
+  std::string strValue;
 };
 
 class V8Debugger : public v8::debug::DebugDelegate,

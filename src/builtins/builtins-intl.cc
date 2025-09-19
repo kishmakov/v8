@@ -1262,6 +1262,22 @@ Handle<Object> CreateCallResult(Isolate* isolate, const bool value) {
   return result;
 }
 
+Handle<Object> CreateCallResult2(Isolate* isolate, const std::string& value) {
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, 2);
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  InstallInto(result, keyCode, valueCode, v8_isolate);
+
+  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  Local<v8::String> valueSimpleValue = v8::String::NewFromUtf8(v8_isolate, value.c_str()).ToLocalChecked();
+  InstallInto(result, keySimpleValue, valueSimpleValue, v8_isolate);
+
+  return result;
+}
+
 BUILTIN(WaitCall) {
   int my_counter = ++counter;
   BuiltinsLog() << my_counter << " WaitCall.1/4";
@@ -1402,6 +1418,10 @@ BUILTIN(RunOnPaused) {
 
   if (result.type == v8_inspector::V8TypeCode::Boolean) {
     return *CreateCallResult(isolate, result.boolValue);
+  }
+
+  if (result.type == v8_inspector::V8TypeCode::String) {
+    return *CreateCallResult2(isolate, result.strValue);
   }
 
   return *CreateCallResult(isolate, false);

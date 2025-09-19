@@ -43,7 +43,8 @@ v8::base::ConditionVariable g_main_cv;
 
 V8ExecutionResult g_result{
   .type = V8TypeCode::Other,
-  .boolValue = false
+  .boolValue = false,
+  .strValue = "",
 };
 
 v8::base::Mutex g_state_mutex;
@@ -608,22 +609,6 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   return function_value;
 }
 
-// Helpers to log V8 values.
-std::string V8ValueTypeName(v8::Local<v8::Value> v) {
-  if (v->IsUndefined()) return "undefined";
-  if (v->IsNull()) return "null";
-  if (v->IsBoolean()) return "boolean";
-  if (v->IsNumber()) return "number";
-  if (v->IsBigInt()) return "bigint";
-  if (v->IsString()) return "string";
-  if (v->IsSymbol()) return "symbol";
-  if (v->IsFunction()) return "function";
-  if (v->IsArray()) return "array";
-  if (v->IsPromise()) return "promise";
-  if (v->IsObject()) return "object";
-  return "unknown";
-}
-
 }  // namespace
 
 V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate) {
@@ -691,16 +676,17 @@ void V8Debugger::processTaskOnStack() const {
       "exception", *msg ? *msg : "<unknown>");
   } else {
     v8::Local<v8::Value> value = call_result.ToLocalChecked();
-    LogV8("processTaskOnStack",
-      "successfully", "finished",
-      "type", V8ValueTypeName(value));
-
     V8TypeCode type = V8ValueTypeCode(value, m_isolate);
+    LogV8("processTaskOnStack", "successfully", "finished", "type", static_cast<int>(type));
+
 
     if (type == V8TypeCode::Boolean) {
-      g_result = {type, value.As<v8::Boolean>()->Value()};
+      g_result = {type, value.As<v8::Boolean>()->Value(), ""};
+    } else if (type == V8TypeCode::String) {
+      v8::String::Utf8Value utf8(m_isolate, value);
+      g_result = {type, false, *utf8 ? std::string(*utf8, utf8.length()) : std::string()};
     } else {
-      g_result = {type, false};
+      g_result = {type, false, ""};
     }
   }
 
