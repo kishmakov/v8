@@ -611,7 +611,7 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
 
 }  // namespace
 
-V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate) {
+V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   if (value->IsUndefined()) return V8TypeCode::Undefined;
   if (value->IsNull()) return V8TypeCode::Null;
   if (value->IsBoolean()) return V8TypeCode::Boolean;
@@ -676,9 +676,8 @@ void V8Debugger::processTaskOnStack() const {
       "exception", *msg ? *msg : "<unknown>");
   } else {
     v8::Local<v8::Value> value = call_result.ToLocalChecked();
-    V8TypeCode type = V8ValueTypeCode(value, m_isolate);
+    V8TypeCode type = V8ValueTypeCode(m_isolate, value);
     LogV8("processTaskOnStack", "successfully", "finished", "type", static_cast<int>(type));
-
 
     if (type == V8TypeCode::Boolean) {
       g_result = {type, value.As<v8::Boolean>()->Value(), ""};

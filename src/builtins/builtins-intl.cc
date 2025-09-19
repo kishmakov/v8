@@ -1072,9 +1072,6 @@ std::ostream& BuiltinsLog() {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 
-constexpr int CODE_OF_UNDEFINED = 0;
-constexpr int CODE_OF_NULL = 1;
-
 std::mutex mtx;
 
 typedef std::shared_ptr<std::condition_variable> shared_cv;
@@ -1148,7 +1145,10 @@ void InstallInto(Handle<Object> object, Local<v8::String> key, Local<Value> valu
 }
 
 // true if value was serialized
-bool SaveValue(const std::string& id, Local<Value> value, int typeCode, v8::Isolate* isolate) {
+bool SaveValue(const std::string& id, Local<Value> value, v8::Isolate* isolate) {
+  int typeCode = static_cast<int>(v8_inspector::V8ValueTypeCode(isolate, value));
+  BuiltinsLog() << " type=" << typeCode;
+
   idToType.emplace(id, typeCode);
 
   if (value->IsUndefined()) return true;
@@ -1172,11 +1172,11 @@ bool SaveValue(const std::string& id, Local<Value> value, int typeCode, v8::Isol
 }
 
 void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id, v8::Isolate* isolate) {
-  if (idToType[id] == CODE_OF_UNDEFINED) {
+  if (idToType[id] == static_cast<int>(v8_inspector::V8TypeCode::Undefined)) {
     InstallInto(dst, key, v8::Undefined(isolate), isolate);
   }
 
-  if (idToType[id] == CODE_OF_NULL) {
+  if (idToType[id] == static_cast<int>(v8_inspector::V8TypeCode::Null)) {
     InstallInto(dst, key, v8::Null(isolate), isolate);
   }
 
@@ -1312,9 +1312,8 @@ BUILTIN(ResumeCall) {
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
-  int code = static_cast<int>(v8_inspector::V8ValueTypeCode(value, v8_isolate));
-  BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code;
-  bool value_saved = SaveValue(id, value, code, v8_isolate);
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id;
+  bool value_saved = SaveValue(id, value, v8_isolate);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   BuiltinsLog() << my_counter << " ResumeCall.2/4" << std::endl;
@@ -1361,19 +1360,18 @@ BUILTIN(ResumeType) {
 
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
-
   Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 3));
-  int code = static_cast<int>(v8_inspector::V8ValueTypeCode(object, v8_isolate));
 
-  BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code << std::endl;
+  BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
 
   shared_cv cv = GetCV(thread_id);
   std::lock_guard<std::mutex> lock(mtx);
+
+  BuiltinsLog() << my_counter << " ResumeType.2/2";
+  SaveValue(id, object, v8_isolate);
+  BuiltinsLog() << std::endl;
+
   cv->notify_one();
-
-  SaveValue(id, object, code, v8_isolate);
-
-  BuiltinsLog() << my_counter << " ResumeType.2/2" << std::endl;
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
