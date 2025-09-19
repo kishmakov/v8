@@ -40,7 +40,11 @@ static const int kNoBreakpointId = 0;
 
 v8::base::Mutex g_main_mutex;
 v8::base::ConditionVariable g_main_cv;
-bool g_result = false;
+
+V8ExecutionResult g_result{
+  .type = V8TypeCode::Other,
+  .boolValue = false
+};
 
 v8::base::Mutex g_state_mutex;
 thread_local std::string t_thread_id;
@@ -622,6 +626,38 @@ std::string V8ValueTypeName(v8::Local<v8::Value> v) {
 
 }  // namespace
 
+V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate) {
+  if (value->IsUndefined()) return V8TypeCode::Undefined;
+  if (value->IsNull()) return V8TypeCode::Null;
+  if (value->IsBoolean()) return V8TypeCode::Boolean;
+  if (value->IsString()) return V8TypeCode::String;
+  if (value->IsNumber()) return V8TypeCode::Number;
+  if (value->IsBigInt()) return V8TypeCode::Other;  // bigint is not supported yet
+  if (value->IsSymbol()) return V8TypeCode::Other;  // symbol is not supported yet
+
+  if (value->IsFunction()) {
+    if (isolate->InContext()) {
+      v8::HandleScope handle_scope(isolate);
+      v8::Local<v8::Context> context = isolate->GetCurrentContext();
+      v8::Local<v8::Object> func = value.As<v8::Object>();
+      v8::Local<v8::Value> is_class_value;
+      v8::Local<v8::String> key = v8::String::NewFromUtf8Literal(isolate, "isClass");
+      if (func->Get(context, key).ToLocal(&is_class_value)) {
+        if (is_class_value->IsBoolean() && is_class_value.As<v8::Boolean>()->Value()) {
+          return V8TypeCode::Class;
+        }
+      }
+    }
+    return V8TypeCode::Function;
+  }
+
+  if (value->IsArray()) return V8TypeCode::Object;
+  if (value->IsPromise()) return V8TypeCode::Function;  // promise is passed as function
+  if (value->IsObject()) return V8TypeCode::Object;
+
+  return V8TypeCode::Other;
+}
+
 void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async,
@@ -662,7 +698,9 @@ void V8Debugger::processTaskOnStack() const {
       "type", V8ValueTypeName(value));
 
     if (value->IsBoolean()) {
-      g_result = value.As<v8::Boolean>()->Value();
+      g_result = {V8TypeCode::Boolean, value.As<v8::Boolean>()->Value()};
+    } else {
+      g_result = {V8TypeCode::Other, false};
     }
   }
 
@@ -1696,13 +1734,13 @@ bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
   return result;
 }
 
-bool V8Debugger::runOnPaused(const std::string& thread_id,
+V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
                              const std::string& target_id,
                              const std::string& member_id,
                              const std::string& args_json,
                              const std::string& result_id,
                              bool is_async) {
-  if (!enabled()) return false;
+  if (!enabled()) return g_result;
 
   LogV8("runOnPaused.enter", "thread_id", thread_id);
 
@@ -1720,10 +1758,7 @@ bool V8Debugger::runOnPaused(const std::string& thread_id,
     g_main_cv.Wait(&g_main_mutex);
   }
 
-  bool result = g_result;
-  g_result = false;
-
-  return result;
+  return g_result;
 }
 
 }  // namespace v8_inspector

@@ -49,6 +49,25 @@ using protocol::Response;
 using TerminateExecutionCallback =
     protocol::Runtime::Backend::TerminateExecutionCallback;
 
+enum class V8TypeCode : int {
+  Undefined = 0,
+  Null = 1,
+  Boolean = 2,
+  String = 3,
+  Number = 4,
+  Object = 101,
+  Function = 102,
+  Class = 103,
+  Other = 1000,
+};
+
+V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate);
+
+struct V8ExecutionResult {
+  V8TypeCode type;
+  bool boolValue;
+};
+
 class V8Debugger : public v8::debug::DebugDelegate,
                    public v8::debug::AsyncEventDelegate {
  public:
@@ -82,7 +101,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void waitCall(const std::string& thread_id);
   void resumeCall(const std::string& thread_id);
   bool isThreadPaused(const std::string& thread_id) const;
-  bool runOnPaused(const std::string& thread_id,
+  V8ExecutionResult runOnPaused(const std::string& thread_id,
                    const std::string& target_id,
                    const std::string& member_id,
                    const std::string& args_json,

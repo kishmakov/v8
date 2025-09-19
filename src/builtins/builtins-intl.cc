@@ -1215,6 +1215,38 @@ Handle<Object> CreateCallResult(Isolate* isolate, const std::string& id) {
   return result;
 }
 
+// Handle<Object> CreateCallResult(Isolate* isolate) {
+//   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+//
+//   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+//
+//   Local<Value> valueCode = v8::Int32::New(v8_isolate, g_result_type);
+//   Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+//   InstallInto(result, keyCode, valueCode, v8_isolate);
+//
+//   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+//
+//   switch (g_result_type) {
+//     case 0: // undefined
+//       InstallInto(result, keySimpleValue, v8::Undefined(v8_isolate), v8_isolate);
+//       break;
+//     case 1: // null
+//       InstallInto(result, keySimpleValue, v8::Null(v8_isolate), v8_isolate);
+//       break;
+//     case 2: // boolean
+//       InstallInto(result, keySimpleValue, v8::Boolean::New(v8_isolate, g_result), v8_isolate);
+//       break;
+//     case 3: // string
+//       InstallInto(result, keySimpleValue, v8::String::NewFromUtf8(v8_isolate, g_result_str.c_str()).ToLocalChecked(), v8_isolate);
+//       break;
+//     case 4: // number
+//       InstallInto(result, keySimpleValue, v8::Number::New(v8_isolate, g_result_num), v8_isolate);
+//       break;
+//   }
+//
+//   return result;
+// }
+
 Handle<Object> CreateCallResult(Isolate* isolate, const bool value) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
@@ -1365,12 +1397,17 @@ BUILTIN(RunOnPaused) {
     << " str_args=" << str_args
     << std::endl;
 
-  bool result = GetDebugger(v8_isolate)->runOnPaused(
+  auto result = GetDebugger(v8_isolate)->runOnPaused(
     thread_id, target_id, member_id, str_args, result_id, is_async
   );
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2" << std::endl;
-  return *CreateCallResult(isolate, result);
+
+  if (result.type == v8_inspector::V8TypeCode::Boolean) {
+    return *CreateCallResult(isolate, result.boolValue);
+  }
+
+  return *CreateCallResult(isolate, false);
 }
 
 BUILTIN(PluralRulesConstructor) {
