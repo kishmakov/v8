@@ -1296,9 +1296,7 @@ BUILTIN(ResumeCall) {
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
-  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
-  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
-
+  int code = static_cast<int>(v8_inspector::V8ValueTypeCode(value, v8_isolate));
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code;
   bool value_saved = SaveValue(id, value, code, v8_isolate);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
@@ -1349,8 +1347,7 @@ BUILTIN(ResumeType) {
   std::string id = IdToString(args, isolate, 2);
 
   Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 3));
-  Local<Value> codeValue = Utils::ToLocal(args.atOrUndefined(isolate, 4));
-  int code = codeValue->Int32Value(v8_isolate->GetCurrentContext()).FromMaybe(0);
+  int code = static_cast<int>(v8_inspector::V8ValueTypeCode(object, v8_isolate));
 
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << " type=" << code << std::endl;
 

@@ -651,9 +651,7 @@ V8TypeCode V8ValueTypeCode(v8::Local<v8::Value> value, v8::Isolate* isolate) {
     return V8TypeCode::Function;
   }
 
-  if (value->IsArray()) return V8TypeCode::Object;
-  if (value->IsPromise()) return V8TypeCode::Function;  // promise is passed as function
-  if (value->IsObject()) return V8TypeCode::Object;
+  if (value->IsArray() || value->IsPromise() || value->IsObject()) return V8TypeCode::Object;
 
   return V8TypeCode::Other;
 }
@@ -697,10 +695,12 @@ void V8Debugger::processTaskOnStack() const {
       "successfully", "finished",
       "type", V8ValueTypeName(value));
 
-    if (value->IsBoolean()) {
-      g_result = {V8TypeCode::Boolean, value.As<v8::Boolean>()->Value()};
+    V8TypeCode type = V8ValueTypeCode(value, m_isolate);
+
+    if (type == V8TypeCode::Boolean) {
+      g_result = {type, value.As<v8::Boolean>()->Value()};
     } else {
-      g_result = {V8TypeCode::Other, false};
+      g_result = {type, false};
     }
   }
 
