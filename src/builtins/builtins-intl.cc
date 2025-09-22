@@ -1076,10 +1076,7 @@ std::mutex mtx;
 
 typedef std::shared_ptr<std::condition_variable> shared_cv;
 std::unordered_map<std::string, shared_cv> cvs;
-std::unordered_map<std::string, int> idToType;
-std::unordered_map<std::string, bool> idToBool;
-std::unordered_map<std::string, std::string> idToStr;
-std::unordered_map<std::string, double> idToNum;
+std::unordered_map<std::string, v8_inspector::V8ExecutionResult> idToResult;
 
 int counter = 0;
 
@@ -1139,148 +1136,80 @@ bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
   return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
 }
 
-void InstallInto(Handle<Object> object, Local<v8::String> key, Local<Value> value, v8::Isolate* isolate) {
+void InstallInto(v8::Isolate* isolate, Handle<Object> object, Local<v8::String> key, Local<Value> value) {
   Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
   dst->Set(isolate->GetCurrentContext(), key, value).Check();
 }
 
+Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult res) {
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+
+  int typeCode = static_cast<int>(res.type);
+
+  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
+  Local<v8::String> keySV = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, typeCode);
+  InstallInto(v8_isolate, result, keyCode, valueCode);
+
+  switch (res.type) {
+    case v8_inspector::V8TypeCode::Undefined: {
+      InstallInto(v8_isolate, result, keySV, v8::Undefined(v8_isolate));
+      break;
+    }
+
+    case v8_inspector::V8TypeCode::Null: {
+      InstallInto(v8_isolate, result, keySV, v8::Null(v8_isolate));
+      break;
+    }
+
+    case v8_inspector::V8TypeCode::Boolean: {
+      auto value = v8::Boolean::New(v8_isolate, res.boolValue);
+      InstallInto(v8_isolate, result, keySV, value);
+      break;
+    }
+
+    case v8_inspector::V8TypeCode::String: {
+      auto value = v8::String::NewFromUtf8(v8_isolate, res.strValue.c_str());
+      InstallInto(v8_isolate, result, keySV, value.ToLocalChecked());
+      break;
+    }
+
+    case v8_inspector::V8TypeCode::Number: {
+      auto value = v8::Number::New(v8_isolate, res.numValue);
+      InstallInto(v8_isolate, result, keySV, value);
+      break;
+    }
+
+    default: break;
+  }
+
+  return result;
+}
+
 // true if value was serialized
-bool SaveValue(const std::string& id, Local<Value> value, v8::Isolate* isolate) {
-  int typeCode = static_cast<int>(v8_inspector::V8ValueTypeCode(isolate, value));
+bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value) {
+  auto res = v8_inspector::V8SerializeValue(isolate, value);
+  int typeCode = static_cast<int>(res.type);
   BuiltinsLog() << " type=" << typeCode;
-
-  idToType.emplace(id, typeCode);
-
-  if (value->IsUndefined()) return true;
-
-  if (value->IsBoolean()) {
-    idToBool.emplace(id, value->BooleanValue(isolate));
-    return true;
-  }
-
-  if (value->IsString()) {
-    idToStr.emplace(id, *v8::String::Utf8Value(isolate, value));
-    return true;
-  }
-
-  if (value->IsNumber()) {
-    idToNum.emplace(id, value->NumberValue(isolate->GetCurrentContext()).FromMaybe(0.0));
-    return true;
-  }
-
-  return false;
+  idToResult.emplace(id, res);
+  return typeCode < 100;
 }
 
-void ReadValue(Handle<Object> dst, Local<v8::String> key, const std::string& id, v8::Isolate* isolate) {
-  if (idToType[id] == static_cast<int>(v8_inspector::V8TypeCode::Undefined)) {
-    InstallInto(dst, key, v8::Undefined(isolate), isolate);
-  }
-
-  if (idToType[id] == static_cast<int>(v8_inspector::V8TypeCode::Null)) {
-    InstallInto(dst, key, v8::Null(isolate), isolate);
-  }
-
-  if (idToBool.contains(id)) {
-    InstallInto(dst, key, v8::Boolean::New(isolate, idToBool[id]), isolate);
-    idToBool.erase(id);
-  }
-
-  if (idToStr.contains(id)) {
-    MaybeLocal<v8::String> value = v8::String::NewFromUtf8(isolate, idToStr[id].c_str());
-    InstallInto(dst, key, value.ToLocalChecked(), isolate);
-    idToStr.erase(id);
-  }
-
-  if (idToNum.contains(id)) {
-    Local<Value> value = v8::Number::New(isolate, idToNum[id]);
-    InstallInto(dst, key, value, isolate);
-    idToNum.erase(id);
-  }
-
-  idToType.erase(id);
-}
-
-Handle<Object> CreateCallResult(Isolate* isolate, const std::string& id) {
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, idToType[id]);
-  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-  InstallInto(result, keyCode, valueCode, v8_isolate);
-
-  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
-  ReadValue(result, keySimpleValue, id, v8_isolate);
-
-  return result;
-}
-
-// Handle<Object> CreateCallResult(Isolate* isolate) {
-//   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-//
-//   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-//
-//   Local<Value> valueCode = v8::Int32::New(v8_isolate, g_result_type);
-//   Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-//   InstallInto(result, keyCode, valueCode, v8_isolate);
-//
-//   Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
-//
-//   switch (g_result_type) {
-//     case 0: // undefined
-//       InstallInto(result, keySimpleValue, v8::Undefined(v8_isolate), v8_isolate);
-//       break;
-//     case 1: // null
-//       InstallInto(result, keySimpleValue, v8::Null(v8_isolate), v8_isolate);
-//       break;
-//     case 2: // boolean
-//       InstallInto(result, keySimpleValue, v8::Boolean::New(v8_isolate, g_result), v8_isolate);
-//       break;
-//     case 3: // string
-//       InstallInto(result, keySimpleValue, v8::String::NewFromUtf8(v8_isolate, g_result_str.c_str()).ToLocalChecked(), v8_isolate);
-//       break;
-//     case 4: // number
-//       InstallInto(result, keySimpleValue, v8::Number::New(v8_isolate, g_result_num), v8_isolate);
-//       break;
-//   }
-//
-//   return result;
-// }
-
-Handle<Object> CreateCallResult(Isolate* isolate, const bool value) {
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, 2);
-  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-  InstallInto(result, keyCode, valueCode, v8_isolate);
-
-  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
-  InstallInto(result, keySimpleValue, v8::Boolean::New(v8_isolate, value), v8_isolate);
-
-  return result;
-}
-
-Handle<Object> CreateCallResult2(Isolate* isolate, const std::string& value) {
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, 2);
-  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-  InstallInto(result, keyCode, valueCode, v8_isolate);
-
-  Local<v8::String> keySimpleValue = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
-  Local<v8::String> valueSimpleValue = v8::String::NewFromUtf8(v8_isolate, value.c_str()).ToLocalChecked();
-  InstallInto(result, keySimpleValue, valueSimpleValue, v8_isolate);
-
+Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
+  auto& res = idToResult[id];
+  int typeCode = static_cast<int>(res.type);
+  BuiltinsLog() << " type=" << typeCode;
+  Handle<Object> result = DeserializeResult(isolate, res);
+  idToResult.erase(id);
   return result;
 }
 
 BUILTIN(WaitCall) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitCall.1/4";
+  BuiltinsLog() << my_counter << " WaitCall.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1292,13 +1221,12 @@ BUILTIN(WaitCall) {
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   // Initiate internal silent wait pause via V8Debugger.
-  BuiltinsLog() << my_counter << " WaitCall.2/4" << std::endl;
+  BuiltinsLog() << my_counter << " WaitCall.2/3" << std::endl;
   GetDebugger(v8_isolate)->waitCall(thread_id);
-  BuiltinsLog() << my_counter << " WaitCall.3/4 value_code=" << idToType[id] << std::endl;
 
-  Handle<Object> result = CreateCallResult(isolate, id);
-
-  BuiltinsLog() << my_counter << " WaitCall.4/4" << std::endl;
+  BuiltinsLog() << my_counter << " WaitCall.3/3";
+  Handle<Object> result = UnshelveValue(isolate, id);
+  BuiltinsLog() << std::endl;
   return *result;
 }
 
@@ -1313,7 +1241,7 @@ BUILTIN(ResumeCall) {
   std::string id = IdToString(args, isolate, 2);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
   BuiltinsLog() << " thread=" << thread_id << " id=" << id;
-  bool value_saved = SaveValue(id, value, v8_isolate);
+  bool value_saved = ShelveValue(v8_isolate, id, value);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   BuiltinsLog() << my_counter << " ResumeCall.2/4" << std::endl;
@@ -1342,12 +1270,12 @@ BUILTIN(WaitType) {
 
   shared_cv cv = GetCV(thread_id);
   std::unique_lock<std::mutex> lock(mtx);
-  cv->wait(lock, [id] { return idToType.contains(id); });
+  cv->wait(lock, [id] { return idToResult.contains(id); });
   DCHECK(isolate->IsOnCentralStack());
 
-  Handle<Object> result = CreateCallResult(isolate, id);
-
-  BuiltinsLog() << my_counter << " WaitType.2/2" << std::endl;
+  BuiltinsLog() << my_counter << " WaitType.2/2";
+  Handle<Object> result = UnshelveValue(isolate, id);
+  BuiltinsLog() << std::endl;
   return *result;
 }
 
@@ -1368,7 +1296,7 @@ BUILTIN(ResumeType) {
   std::lock_guard<std::mutex> lock(mtx);
 
   BuiltinsLog() << my_counter << " ResumeType.2/2";
-  SaveValue(id, object, v8_isolate);
+  ShelveValue(v8_isolate, id, object);
   BuiltinsLog() << std::endl;
 
   cv->notify_one();
@@ -1414,15 +1342,7 @@ BUILTIN(RunOnPaused) {
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2" << std::endl;
 
-  if (result.type == v8_inspector::V8TypeCode::Boolean) {
-    return *CreateCallResult(isolate, result.boolValue);
-  }
-
-  if (result.type == v8_inspector::V8TypeCode::String) {
-    return *CreateCallResult2(isolate, result.strValue);
-  }
-
-  return *CreateCallResult(isolate, false);
+  return *DeserializeResult(isolate, result);
 }
 
 BUILTIN(PluralRulesConstructor) {

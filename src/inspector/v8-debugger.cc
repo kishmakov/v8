@@ -45,10 +45,12 @@ V8ExecutionResult g_result{
   .type = V8TypeCode::Other,
   .boolValue = false,
   .strValue = "",
+  .numValue = 0.0,
 };
 
-v8::base::Mutex g_state_mutex;
 thread_local std::string t_thread_id;
+
+v8::base::Mutex g_state_mutex;
 
 std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
@@ -641,6 +643,40 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeCode::Other;
 }
 
+V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  v8::HandleScope handle_scope(isolate);
+
+  V8ExecutionResult result{
+    .type = V8ValueTypeCode(isolate, value),
+    .boolValue = false,
+    .strValue = std::string(),
+    .numValue = 0.0,
+  };
+
+  switch (result.type) {
+    case V8TypeCode::Boolean: {
+      result.boolValue = value.As<v8::Boolean>()->Value();
+      break;
+    }
+
+    case V8TypeCode::String: {
+      v8::String::Utf8Value utf8(isolate, value);
+      if (*utf8) result.strValue.assign(*utf8, utf8.length());
+      break;
+    }
+
+    case V8TypeCode::Number: {
+      const auto& context = isolate->GetCurrentContext();
+      result.numValue = value->NumberValue(context).FromMaybe(0.0);
+      break;
+    }
+
+    default: break;
+  }
+
+  return result;
+}
+
 void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async,
@@ -676,17 +712,8 @@ void V8Debugger::processTaskOnStack() const {
       "exception", *msg ? *msg : "<unknown>");
   } else {
     v8::Local<v8::Value> value = call_result.ToLocalChecked();
-    V8TypeCode type = V8ValueTypeCode(m_isolate, value);
-    LogV8("processTaskOnStack", "successfully", "finished", "type", static_cast<int>(type));
-
-    if (type == V8TypeCode::Boolean) {
-      g_result = {type, value.As<v8::Boolean>()->Value(), ""};
-    } else if (type == V8TypeCode::String) {
-      v8::String::Utf8Value utf8(m_isolate, value);
-      g_result = {type, false, *utf8 ? std::string(*utf8, utf8.length()) : std::string()};
-    } else {
-      g_result = {type, false, ""};
-    }
+    g_result = V8SerializeValue(m_isolate, value);
+    LogV8("processTaskOnStack", "successfully", "finished", "type", static_cast<int>(g_result.type));
   }
 
   g_main_cv.NotifyAll();
