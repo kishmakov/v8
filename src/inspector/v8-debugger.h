@@ -65,9 +65,11 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
 struct V8ExecutionResult {
   V8TypeCode type;
-  bool boolValue;
-  std::string strValue;
-  double numValue;
+  bool boolValue = false;
+  std::string strValue = "";
+  double numValue = 0.0;
+
+  std::string jsonValue = "";
 };
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value);

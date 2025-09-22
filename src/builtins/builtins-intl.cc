@@ -1183,12 +1183,19 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     default: break;
   }
 
+  if (!res.jsonValue.empty()) {
+    Local<v8::String> keyJSON = v8::String::NewFromUtf8(v8_isolate, "_as_json_str").ToLocalChecked();
+    auto value = v8::String::NewFromUtf8(v8_isolate, res.jsonValue.c_str());
+    InstallInto(v8_isolate, result, keyJSON, value.ToLocalChecked());
+  }
+
   return result;
 }
 
 // true if value was serialized
-bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value) {
+bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value, const std::string& json = "") {
   auto res = v8_inspector::V8SerializeValue(isolate, value);
+  res.jsonValue = json;
   int typeCode = static_cast<int>(res.type);
   BuiltinsLog() << " type=" << typeCode;
   idToResult.emplace(id, res);
@@ -1285,6 +1292,7 @@ BUILTIN(ResumeType) {
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
   Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  std::string object_str = IdToString(args, isolate, 4);
 
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
 
@@ -1292,7 +1300,7 @@ BUILTIN(ResumeType) {
   std::lock_guard<std::mutex> lock(mtx);
 
   BuiltinsLog() << my_counter << " ResumeType.2/2";
-  ShelveValue(v8_isolate, id, object);
+  ShelveValue(v8_isolate, id, object, object_str);
   BuiltinsLog() << std::endl;
 
   cv->notify_one();

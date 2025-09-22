@@ -41,12 +41,7 @@ static const int kNoBreakpointId = 0;
 v8::base::Mutex g_main_mutex;
 v8::base::ConditionVariable g_main_cv;
 
-V8ExecutionResult g_result{
-  .type = V8TypeCode::Other,
-  .boolValue = false,
-  .strValue = "",
-  .numValue = 0.0,
-};
+V8ExecutionResult g_result{.type = V8TypeCode::Other};
 
 thread_local std::string t_thread_id;
 
@@ -656,12 +651,7 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
 
-  V8ExecutionResult result{
-    .type = V8ValueTypeCode(isolate, value),
-    .boolValue = false,
-    .strValue = std::string(),
-    .numValue = 0.0,
-  };
+  V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value)};
 
   switch (result.type) {
     case V8TypeCode::Boolean: {
