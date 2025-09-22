@@ -1143,15 +1143,12 @@ void InstallInto(v8::Isolate* isolate, Handle<Object> object, Local<v8::String> 
 
 Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult res) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-
-  int typeCode = static_cast<int>(res.type);
 
   Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
   Local<v8::String> keySV = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
 
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, typeCode);
+  Local<Value> valueCode = v8::Int32::New(v8_isolate, static_cast<int>(res.type));
   InstallInto(v8_isolate, result, keyCode, valueCode);
 
   switch (res.type) {
@@ -1200,8 +1197,7 @@ bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value
 
 Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
   auto& res = idToResult[id];
-  int typeCode = static_cast<int>(res.type);
-  BuiltinsLog() << " type=" << typeCode;
+  BuiltinsLog() << " type=" << static_cast<int>(res.type);
   Handle<Object> result = DeserializeResult(isolate, res);
   idToResult.erase(id);
   return result;

@@ -517,8 +517,25 @@ void V8Debugger::clearContinueToLocation() {
 
 namespace {
 
+std::ostream& V8CallsLog() {
+  static std::ostream* active = []() -> std::ostream* {
+    const char* dir = std::getenv("ISOLATION_LOG_DIR");
+    if (dir && dir[0] != '\0') {
+      std::string path = std::string(dir) + "/log_v8_calls.txt";
+      auto* fs = new std::ofstream(path, std::ios::app);
+      return fs; // real log
+    }
+    struct NullBuf : public std::streambuf {
+      int overflow(int c) override { return c; }
+    };
+    auto* null_buf = new NullBuf();
+    return new std::ostream(null_buf); // fallback dummy log
+  }();
+  return *active;
+}
+
 struct PairPrinter {
-  std::ofstream& log;
+  std::ostream& log;
   void operator()() const {}
   template <typename K, typename V, typename... Rest>
   void operator()(K&& k, V&& v, Rest&&... rest) const {
@@ -531,13 +548,10 @@ struct PairPrinter {
 
 template <typename... Args>
 void LogV8(const char* event, Args&&... args) {
-  static const char kLogPath[] = "/home/kishmakov/.vscode-oss-dev/logs/log_v8_calls.txt";
   static std::mutex log_mutex;
-
   std::lock_guard<std::mutex> lk(log_mutex);
-  std::ofstream log(kLogPath, std::ios::app);
-  if (!log.is_open()) return;
 
+  std::ostream& log = V8CallsLog();
   log << event;
   PairPrinter{log}(std::forward<Args>(args)...);
   log << '\n';
@@ -571,10 +585,6 @@ v8::Local<v8::Value> GetV8GlobalContext(v8::Isolate* isolate, v8::Local<v8::Cont
       v8::Local<v8::Value> name_candidate;
       if (!names->Get(context, i).ToLocal(&name_candidate)) continue;
       v8::String::Utf8Value utf8_key(isolate, name_candidate);
-      // LogV8("scopeBinding",
-      //       "scopeType", scope_it->GetType(),
-      //       "name", *utf8_key ? *utf8_key : "<non-utf8>");
-
       if (name_candidate->IsString() && name_candidate.As<v8::String>()->StringEquals(v8_name)) {
         v8::Local<v8::Value> result;
         if (scope_obj->Get(context, name_candidate).ToLocal(&result)) {
@@ -599,12 +609,12 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   v8::Local<v8::Value> function_value;
 
   if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
-    LogV8("processTaskOnStack", "failed to locate context.doCallWorkerFunction");
+    LogV8("GetCallFunction", "failed to locate context.doCallWorkerFunction");
     return v8::Undefined(v8_isolate);;
   }
 
   if (function_value->IsUndefined() || !function_value->IsFunction()) {
-    LogV8("processTaskOnStack", "context.doCallWorkerFunction is not a function");
+    LogV8("GetCallFunction", "context.doCallWorkerFunction is not a function");
     return v8::Undefined(v8_isolate);;
   }
 
@@ -678,7 +688,7 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> va
 }
 
 void V8Debugger::processTaskOnStack() const {
-  LogV8("processTaskOnStack", "target", g_task_target_id,
+  LogV8("processTaskOnStack.1/2", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async,
     "result", g_task_result_id);
 
@@ -707,13 +717,11 @@ void V8Debugger::processTaskOnStack() const {
 
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
-    LogV8("processTaskOnStack",
-      "failed to call", "doCallWorkerFunction",
-      "exception", *msg ? *msg : "<unknown>");
+    LogV8("processTaskOnStack.2/2", "failed with exception", *msg ? *msg : "<unknown>");
   } else {
     v8::Local<v8::Value> value = call_result.ToLocalChecked();
     g_result = V8SerializeValue(m_isolate, value);
-    LogV8("processTaskOnStack", "successfully", "finished", "type", static_cast<int>(g_result.type));
+    LogV8("processTaskOnStack.2/2", "type", static_cast<int>(g_result.type));
   }
 
   g_main_cv.NotifyAll();
@@ -1697,16 +1705,16 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
 }
 
 void V8Debugger::waitCall(const std::string& thread_id) {
-  LogV8("waitCall.enter", "thread_id", thread_id);
+  LogV8("waitCall.1/3", "thread_id", thread_id);
   if (!enabled()) return;
 
   if (!isPaused()) {
     v8::base::MutexGuard guard(&g_state_mutex);
     t_thread_id = thread_id;
     g_paused_thread_ids.insert(thread_id);
-    LogV8("waitCall.initiate_stop", "thread_id", thread_id);
+    LogV8("waitCall.2/3 [preparing]", "thread_id", thread_id);
   } else {
-    LogV8("waitCall.skip_already_paused", "thread_id", thread_id);
+    LogV8("waitCall.3/3 [skip already paused]", "thread_id", thread_id);
     return;  // ignore nested or concurrent
   }
 
@@ -1718,11 +1726,11 @@ void V8Debugger::waitCall(const std::string& thread_id) {
   v8::debug::BreakRightNow(
       m_isolate,
       v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
-  LogV8("waitCall.break_request", "group id", m_targetContextGroupId);
+  LogV8("waitCall.3/3 [break requested]", "group id", m_targetContextGroupId);
 }
 
 void V8Debugger::resumeCall(const std::string& thread_id) {
-  LogV8("resumeCall.enter", "thread_id", thread_id);
+  LogV8("resumeCall.1/2", "thread_id", thread_id);
   if (!enabled()) return;
 
   {
@@ -1732,7 +1740,7 @@ void V8Debugger::resumeCall(const std::string& thread_id) {
     cv->NotifyAll();
   }
 
-  LogV8("resumeCall.signaled", "thread_id", thread_id);
+  LogV8("resumeCall.2/2 [signaled]", "thread_id", thread_id);
 }
 
 bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
@@ -1742,7 +1750,7 @@ bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
     result = g_paused_thread_ids.contains(thread_id);
   }
 
-  LogV8("isThreadPaused.enter", "thread_id", thread_id, "result", result);
+  LogV8("isThreadPaused.1/1", "thread_id", thread_id, "result", result);
   return result;
 }
 
@@ -1753,8 +1761,7 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
                              const std::string& result_id,
                              bool is_async) {
   if (!enabled()) return g_result;
-
-  LogV8("runOnPaused.enter", "thread_id", thread_id);
+  LogV8("runOnPaused.1/2", "thread_id", thread_id);
 
   g_task_target_id = target_id;
   g_task_member_id = member_id;
@@ -1770,6 +1777,7 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
     g_main_cv.Wait(&g_main_mutex);
   }
 
+  LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_result.type));
   return g_result;
 }
 
