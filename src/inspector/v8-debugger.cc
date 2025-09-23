@@ -616,6 +616,16 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   return function_value;
 }
 
+
+std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  v8::HandleScope handle_scope(isolate);
+  if (!value->IsObject()) return "";
+  v8::Local<v8::Object> obj = value.As<v8::Object>();
+  v8::Local<v8::String> ctor = obj->GetConstructorName();
+  v8::String::Utf8Value utf8(isolate, ctor);
+  return *utf8 ? *utf8 : "";
+}
+
 }  // namespace
 
 V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
@@ -651,7 +661,8 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
 
-  V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value)};
+  V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value),
+                           .ctorName = SafeCtorName(isolate, value)};
 
   switch (result.type) {
     case V8TypeCode::Boolean: {

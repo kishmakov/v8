@@ -1042,7 +1042,6 @@ BUILTIN(StringPrototypeToLocaleUpperCase) {
 }
 
 namespace {
-
 size_t fib(int n) { /* fib(41) < 10 */
   return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
 }
@@ -1066,8 +1065,6 @@ std::ostream& BuiltinsLog() {
 
   return *active;
 }
-
-} // namespace
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
@@ -1189,6 +1186,12 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     InstallInto(v8_isolate, result, keyJSON, value.ToLocalChecked());
   }
 
+  if (!res.ctorName.empty()) {
+    Local<v8::String> keyCtor = v8::String::NewFromUtf8(v8_isolate, "_ctor_str").ToLocalChecked();
+    auto value = v8::String::NewFromUtf8(v8_isolate, res.ctorName.c_str());
+    InstallInto(v8_isolate, result, keyCtor, value.ToLocalChecked());
+  }
+
   return result;
 }
 
@@ -1198,17 +1201,20 @@ bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value
   res.jsonValue = json;
   int typeCode = static_cast<int>(res.type);
   BuiltinsLog() << " type=" << typeCode;
+  if (!json.empty()) BuiltinsLog() << " json=" << json;
   idToResult.emplace(id, res);
   return typeCode < 100;
 }
 
 Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
   auto& res = idToResult[id];
-  BuiltinsLog() << " type=" << static_cast<int>(res.type);
+  BuiltinsLog() << " type=" << static_cast<int>(res.type) << " ctor=" << res.ctorName;
   Handle<Object> result = DeserializeResult(isolate, res);
   idToResult.erase(id);
   return result;
 }
+
+} // namespace
 
 BUILTIN(WaitCall) {
   int my_counter = ++counter;

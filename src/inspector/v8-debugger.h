@@ -70,6 +70,7 @@ struct V8ExecutionResult {
   double numValue = 0.0;
 
   std::string jsonValue = "";
+  std::string ctorName = "";
 };
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value);
