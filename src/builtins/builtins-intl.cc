@@ -1249,8 +1249,10 @@ BUILTIN(ResumeCall) {
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
   Local<Value> value = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  std::string value_str = IdToString(args, isolate, 4);
+
   BuiltinsLog() << " thread=" << thread_id << " id=" << id;
-  bool value_saved = ShelveValue(v8_isolate, id, value);
+  bool value_saved = ShelveValue(v8_isolate, id, value, value_str);
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   BuiltinsLog() << my_counter << " ResumeCall.2/4" << std::endl;
