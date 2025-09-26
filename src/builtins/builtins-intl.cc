@@ -1352,7 +1352,10 @@ BUILTIN(RunOnPaused) {
     thread_id, target_id, member_id, str_args, result_id, is_async
   );
 
-  BuiltinsLog() << my_counter << " RunOnPaused.2/2" << std::endl;
+  BuiltinsLog() << my_counter << " RunOnPaused.2/2"
+    << " type=" << static_cast<int>(result.type)
+    << " json=" << result.jsonValue
+    << std::endl;
 
   return *DeserializeResult(isolate, result);
 }
