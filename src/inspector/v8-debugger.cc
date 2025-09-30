@@ -600,16 +600,16 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
     return v8::Undefined(v8_isolate);
   }
 
-  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "doCallWorkerFunction");
+  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "callWorkerFunctionPaused");
   v8::Local<v8::Value> function_value;
 
   if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
-    LogV8("GetCallFunction", "failed to locate context.doCallWorkerFunction");
+    LogV8("GetCallFunction", "failed to locate context.callWorkerFunctionPaused");
     return v8::Undefined(v8_isolate);;
   }
 
   if (function_value->IsUndefined() || !function_value->IsFunction()) {
-    LogV8("GetCallFunction", "context.doCallWorkerFunction is not a function");
+    LogV8("GetCallFunction", "context.callWorkerFunctionPaused is not a function");
     return v8::Undefined(v8_isolate);;
   }
 
