@@ -1181,15 +1181,15 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
   }
 
   if (!res.jsonValue.empty()) {
-    Local<v8::String> keyJSON = v8::String::NewFromUtf8(v8_isolate, "_as_json_str").ToLocalChecked();
+    Local<v8::String> key = v8::String::NewFromUtf8(v8_isolate, "_as_json_str").ToLocalChecked();
     auto value = v8::String::NewFromUtf8(v8_isolate, res.jsonValue.c_str());
-    InstallInto(v8_isolate, result, keyJSON, value.ToLocalChecked());
+    InstallInto(v8_isolate, result, key, value.ToLocalChecked());
   }
 
   if (!res.ctorName.empty()) {
-    Local<v8::String> keyCtor = v8::String::NewFromUtf8(v8_isolate, "_ctor_str").ToLocalChecked();
+    Local<v8::String> key = v8::String::NewFromUtf8(v8_isolate, "_ctor_str").ToLocalChecked();
     auto value = v8::String::NewFromUtf8(v8_isolate, res.ctorName.c_str());
-    InstallInto(v8_isolate, result, keyCtor, value.ToLocalChecked());
+    InstallInto(v8_isolate, result, key, value.ToLocalChecked());
   }
 
   return result;
