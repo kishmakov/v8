@@ -616,7 +616,6 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   return function_value;
 }
 
-
 std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
   if (!value->IsObject()) return "";
@@ -624,6 +623,19 @@ std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   v8::Local<v8::String> ctor = obj->GetConstructorName();
   v8::String::Utf8Value utf8(isolate, ctor);
   return *utf8 ? *utf8 : "";
+}
+
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> result_ser) {
+  v8::Local<v8::String> comm_value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
+  const auto& context = isolate->GetCurrentContext();
+
+  v8::Local<v8::Value> comm_value_value;
+  if (!result_ser.As<v8::Object>()->Get(context, comm_value_key).ToLocal(&comm_value_value)) {
+    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
+    return V8ExecutionResult{};
+  }
+
+   return V8SerializeValue(isolate, comm_value_value);
 }
 
 }  // namespace
@@ -689,7 +701,7 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> va
 }
 
 void V8Debugger::processTaskOnStack() const {
-  LogV8("processTaskOnStack.1/2", "target", g_task_target_id,
+  LogV8("processTaskOnStack.1/3", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async,
     "result", g_task_result_id);
 
@@ -718,11 +730,11 @@ void V8Debugger::processTaskOnStack() const {
 
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
-    LogV8("processTaskOnStack.2/2", "failed with exception", *msg ? *msg : "<unknown>");
+    LogV8("processTaskOnStack.3/3", "failed with exception", *msg ? *msg : "<unknown>");
   } else {
-    v8::Local<v8::Value> value = call_result.ToLocalChecked();
-    g_result = V8SerializeValue(m_isolate, value);
-    LogV8("processTaskOnStack.2/2", "type", static_cast<int>(g_result.type));
+    LogV8("processTaskOnStack.2/3");
+    g_result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
+    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(g_result.type));
   }
 
   g_main_cv.NotifyAll();
