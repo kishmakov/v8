@@ -625,7 +625,8 @@ std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return *utf8 ? *utf8 : "";
 }
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> result_ser) {
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
+                                    const v8::Local<v8::Value> result_ser) {
   v8::Local<v8::String> comm_value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
   const auto& context = isolate->GetCurrentContext();
 
@@ -670,7 +671,8 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeCode::Other;
 }
 
-V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
+                                   const v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
 
   V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value),
