@@ -625,6 +625,20 @@ std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return *utf8 ? *utf8 : "";
 }
 
+std::string GetOptionalStr(v8::Isolate* isolate,
+                           const v8::Local<v8::Value> result_ser,
+                           const std::string& key_str) {
+  v8::Local<v8::String> key = v8::String::NewFromUtf8(isolate, key_str.c_str()).ToLocalChecked();
+
+  v8::Local<v8::Value> value;
+  const auto& context = isolate->GetCurrentContext();
+  if (!result_ser.As<v8::Object>()->Get(context, key).ToLocal(&value)) return "";
+  if (!value->IsString()) return "";
+
+  v8::String::Utf8Value utf8(isolate, value);
+  return *utf8;
+}
+
 V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
                                     const v8::Local<v8::Value> result_ser) {
   v8::Local<v8::String> comm_value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
@@ -636,7 +650,12 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
     return V8ExecutionResult{};
   }
 
-   return V8SerializeValue(isolate, comm_value_value);
+  V8ExecutionResult result = V8SerializeValue(isolate, comm_value_value);
+
+  result.CommResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
+  result.CommProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
+
+  return result;
 }
 
 }  // namespace
@@ -676,10 +695,7 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
   v8::HandleScope handle_scope(isolate);
 
   V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value),
-                           .ctorName = SafeCtorName(isolate, value),
-                           .resultId = g_task_result_id};
-
-  g_task_result_id = "";
+                           .ctorName = SafeCtorName(isolate, value)};
 
   switch (result.type) {
     case V8TypeCode::Boolean: {

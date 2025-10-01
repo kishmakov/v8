@@ -1189,7 +1189,8 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 
   InstallNonemptyInto(v8_isolate, result, "_as_json_str", res.jsonValue);
   InstallNonemptyInto(v8_isolate, result, "_ctor_str", res.ctorName);
-  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.resultId);
+  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.CommResultID);
+  InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.CommProxyID);
 
   return result;
 }

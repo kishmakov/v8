@@ -72,7 +72,8 @@ struct V8ExecutionResult {
   std::string jsonValue = "";
   std::string ctorName = "";
 
-  std::string resultId = "";
+  std::string CommResultID = "";
+  std::string CommProxyID = "";
 };
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value);
