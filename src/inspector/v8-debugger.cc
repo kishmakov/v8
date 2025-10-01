@@ -676,7 +676,10 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
   v8::HandleScope handle_scope(isolate);
 
   V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value),
-                           .ctorName = SafeCtorName(isolate, value)};
+                           .ctorName = SafeCtorName(isolate, value),
+                           .resultId = g_task_result_id};
+
+  g_task_result_id = "";
 
   switch (result.type) {
     case V8TypeCode::Boolean: {

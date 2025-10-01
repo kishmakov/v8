@@ -1138,6 +1138,13 @@ void InstallInto(v8::Isolate* isolate, Handle<Object> object, Local<v8::String> 
   dst->Set(isolate->GetCurrentContext(), key, value).Check();
 }
 
+void InstallNonemptyInto(v8::Isolate* isolate, Handle<Object> dst, const std::string& key, const std::string& value) {
+  if (value.empty()) return;
+  Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
+  auto v8_value = v8::String::NewFromUtf8(isolate, value.c_str());
+  InstallInto(isolate, dst, v8_key, v8_value.ToLocalChecked());
+}
+
 Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult res) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
@@ -1180,17 +1187,9 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     default: break;
   }
 
-  if (!res.jsonValue.empty()) {
-    Local<v8::String> key = v8::String::NewFromUtf8(v8_isolate, "_as_json_str").ToLocalChecked();
-    auto value = v8::String::NewFromUtf8(v8_isolate, res.jsonValue.c_str());
-    InstallInto(v8_isolate, result, key, value.ToLocalChecked());
-  }
-
-  if (!res.ctorName.empty()) {
-    Local<v8::String> key = v8::String::NewFromUtf8(v8_isolate, "_ctor_str").ToLocalChecked();
-    auto value = v8::String::NewFromUtf8(v8_isolate, res.ctorName.c_str());
-    InstallInto(v8_isolate, result, key, value.ToLocalChecked());
-  }
+  InstallNonemptyInto(v8_isolate, result, "_as_json_str", res.jsonValue);
+  InstallNonemptyInto(v8_isolate, result, "_ctor_str", res.ctorName);
+  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.resultId);
 
   return result;
 }
