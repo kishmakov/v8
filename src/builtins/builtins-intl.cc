@@ -1339,8 +1339,7 @@ BUILTIN(RunOnPaused) {
   std::string target_id = IdToString(args, isolate, 2);
   std::string member_id = IdToString(args, isolate, 3);
   std::string str_args = IdToString(args, isolate, 4);
-  std::string result_id = IdToString(args, isolate, 5);
-  bool is_async = IdToBool(args, isolate, 6);
+  bool is_async = IdToBool(args, isolate, 5);
 
   BuiltinsLog() << " thread=" << thread_id
     << " target=" << target_id
@@ -1349,7 +1348,7 @@ BUILTIN(RunOnPaused) {
     << std::endl;
 
   auto result = GetDebugger(v8_isolate)->runOnPaused(
-    thread_id, target_id, member_id, str_args, result_id, is_async
+    thread_id, target_id, member_id, str_args, is_async
   );
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2"

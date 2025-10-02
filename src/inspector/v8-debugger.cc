@@ -54,7 +54,6 @@ std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
 std::string g_task_target_id = "";
 std::string g_task_member_id = "";
 std::string g_task_args_json = "";
-std::string g_task_result_id = "";
 bool g_task_is_async = false;
 
 #pragma clang diagnostic pop
@@ -723,8 +722,7 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
 
 void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack.1/3", "target", g_task_target_id,
-    "member", g_task_member_id, "is_async", g_task_is_async,
-    "result", g_task_result_id);
+    "member", g_task_member_id, "is_async", g_task_is_async);
 
   std::string target_id = g_task_target_id;
   g_task_target_id = "";
@@ -742,12 +740,11 @@ void V8Debugger::processTaskOnStack() const {
   v8::Local<v8::Value> v8_target = cppToV8(m_isolate, target_id);
   v8::Local<v8::Value> v8_member = cppToV8(m_isolate, g_task_member_id);
   v8::Local<v8::Value> v8_args = cppToV8(m_isolate, g_task_args_json);
-  v8::Local<v8::Value> v8_result = cppToV8(m_isolate, g_task_result_id);
   v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, g_task_is_async);
 
-  v8::Local<v8::Value> argv[5] = {v8_target, v8_member, v8_args, v8_result, v8_async};
+  v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
 
-  v8::MaybeLocal<v8::Value> call_result = call_function->Call(v8_context, v8_context->Global(), 5, argv);
+  v8::MaybeLocal<v8::Value> call_result = call_function->Call(v8_context, v8_context->Global(), 4, argv);
 
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
@@ -1792,7 +1789,6 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
                              const std::string& target_id,
                              const std::string& member_id,
                              const std::string& args_json,
-                             const std::string& result_id,
                              bool is_async) {
   if (!enabled()) return g_result;
   LogV8("runOnPaused.1/2", "thread_id", thread_id);
@@ -1800,7 +1796,6 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
   g_task_target_id = target_id;
   g_task_member_id = member_id;
   g_task_args_json = args_json;
-  g_task_result_id = result_id;
   g_task_is_async = is_async;
 
   auto cv = GetCV(thread_id);
