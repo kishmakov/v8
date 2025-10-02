@@ -41,7 +41,7 @@ static const int kNoBreakpointId = 0;
 v8::base::Mutex g_main_mutex;
 v8::base::ConditionVariable g_main_cv;
 
-V8ExecutionResult g_result{.type = V8TypeCode::Other};
+V8ExecutionResult g_result;
 
 thread_local std::string t_thread_id;
 
@@ -651,22 +651,22 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
 
   V8ExecutionResult result = V8SerializeValue(isolate, comm_value_value);
 
-  result.CommResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
-  result.CommProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
+  result.commResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
+  result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
 
   return result;
 }
 
 }  // namespace
 
-V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
-  if (value->IsUndefined()) return V8TypeCode::Undefined;
-  if (value->IsNull()) return V8TypeCode::Null;
-  if (value->IsBoolean()) return V8TypeCode::Boolean;
-  if (value->IsString()) return V8TypeCode::String;
-  if (value->IsNumber()) return V8TypeCode::Number;
-  if (value->IsBigInt()) return V8TypeCode::Other;  // bigint is not supported yet
-  if (value->IsSymbol()) return V8TypeCode::Other;  // symbol is not supported yet
+V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  if (value->IsUndefined()) return V8TypeID::Undefined;
+  if (value->IsNull()) return V8TypeID::Null;
+  if (value->IsBoolean()) return V8TypeID::Boolean;
+  if (value->IsString()) return V8TypeID::String;
+  if (value->IsNumber()) return V8TypeID::Number;
+  if (value->IsBigInt()) return V8TypeID::Other;  // bigint is not supported yet
+  if (value->IsSymbol()) return V8TypeID::Other;  // symbol is not supported yet
 
   if (value->IsFunction()) {
     if (isolate->InContext()) {
@@ -677,38 +677,38 @@ V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
       v8::Local<v8::String> key = v8::String::NewFromUtf8Literal(isolate, "isClass");
       if (func->Get(context, key).ToLocal(&is_class_value)) {
         if (is_class_value->IsBoolean() && is_class_value.As<v8::Boolean>()->Value()) {
-          return V8TypeCode::Class;
+          return V8TypeID::Class;
         }
       }
     }
-    return V8TypeCode::Function;
+    return V8TypeID::Function;
   }
 
-  if (value->IsArray() || value->IsPromise() || value->IsObject()) return V8TypeCode::Object;
+  if (value->IsArray() || value->IsPromise() || value->IsObject()) return V8TypeID::Object;
 
-  return V8TypeCode::Other;
+  return V8TypeID::Other;
 }
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
                                    const v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
 
-  V8ExecutionResult result{.type = V8ValueTypeCode(isolate, value),
+  V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate, value),
                            .ctorName = SafeCtorName(isolate, value)};
 
-  switch (result.type) {
-    case V8TypeCode::Boolean: {
+  switch (result.commTypeID) {
+    case V8TypeID::Boolean: {
       result.boolValue = value.As<v8::Boolean>()->Value();
       break;
     }
 
-    case V8TypeCode::String: {
+    case V8TypeID::String: {
       v8::String::Utf8Value utf8(isolate, value);
       if (*utf8) result.strValue.assign(*utf8, utf8.length());
       break;
     }
 
-    case V8TypeCode::Number: {
+    case V8TypeID::Number: {
       const auto& context = isolate->GetCurrentContext();
       result.numValue = value->NumberValue(context).FromMaybe(0.0);
       break;
@@ -752,7 +752,7 @@ void V8Debugger::processTaskOnStack() const {
   } else {
     LogV8("processTaskOnStack.2/3");
     g_result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
-    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(g_result.type));
+    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(g_result.commTypeID));
   }
 
   g_main_cv.NotifyAll();
@@ -1806,7 +1806,7 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
     g_main_cv.Wait(&g_main_mutex);
   }
 
-  LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_result.type));
+  LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_result.commTypeID));
   return g_result;
 }
 

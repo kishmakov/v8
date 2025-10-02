@@ -49,7 +49,7 @@ using protocol::Response;
 using TerminateExecutionCallback =
     protocol::Runtime::Backend::TerminateExecutionCallback;
 
-enum class V8TypeCode : int {
+enum class V8TypeID : int {
   Undefined = 0,
   Null = 1,
   Boolean = 2,
@@ -61,19 +61,19 @@ enum class V8TypeCode : int {
   Other = 1000,
 };
 
-V8TypeCode V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
+V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
 struct V8ExecutionResult {
-  V8TypeCode type;
+  V8TypeID commTypeID = V8TypeID::Other;
+  std::string commResultID = "";
+  std::string commProxyID = "";
+
   bool boolValue = false;
   std::string strValue = "";
   double numValue = 0.0;
 
   std::string jsonValue = "";
   std::string ctorName = "";
-
-  std::string CommResultID = "";
-  std::string CommProxyID = "";
 };
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value);

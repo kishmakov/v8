@@ -1133,52 +1133,48 @@ bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
   return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
 }
 
-void InstallInto(v8::Isolate* isolate, Handle<Object> object, Local<v8::String> key, Local<Value> value) {
+void InstallInto(v8::Isolate* isolate, Handle<Object> object, const std::string& key, Local<Value> value) {
+  Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
   Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
-  dst->Set(isolate->GetCurrentContext(), key, value).Check();
+  dst->Set(isolate->GetCurrentContext(), v8_key, value).Check();
 }
 
 void InstallNonemptyInto(v8::Isolate* isolate, Handle<Object> dst, const std::string& key, const std::string& value) {
   if (value.empty()) return;
-  Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
   auto v8_value = v8::String::NewFromUtf8(isolate, value.c_str());
-  InstallInto(isolate, dst, v8_key, v8_value.ToLocalChecked());
+  InstallInto(isolate, dst, key, v8_value.ToLocalChecked());
 }
 
 Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult res) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
   Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
 
-  Local<v8::String> keyCode = v8::String::NewFromUtf8(v8_isolate, "code").ToLocalChecked();
-  Local<v8::String> keySV = v8::String::NewFromUtf8(v8_isolate, "simpleValue").ToLocalChecked();
+  const std::string keySV = "simpleValue";
 
-  Local<Value> valueCode = v8::Int32::New(v8_isolate, static_cast<int>(res.type));
-  InstallInto(v8_isolate, result, keyCode, valueCode);
-
-  switch (res.type) {
-    case v8_inspector::V8TypeCode::Undefined: {
+  switch (res.commTypeID) {
+    case v8_inspector::V8TypeID::Undefined: {
       InstallInto(v8_isolate, result, keySV, v8::Undefined(v8_isolate));
       break;
     }
 
-    case v8_inspector::V8TypeCode::Null: {
+    case v8_inspector::V8TypeID::Null: {
       InstallInto(v8_isolate, result, keySV, v8::Null(v8_isolate));
       break;
     }
 
-    case v8_inspector::V8TypeCode::Boolean: {
+    case v8_inspector::V8TypeID::Boolean: {
       auto value = v8::Boolean::New(v8_isolate, res.boolValue);
       InstallInto(v8_isolate, result, keySV, value);
       break;
     }
 
-    case v8_inspector::V8TypeCode::String: {
+    case v8_inspector::V8TypeID::String: {
       auto value = v8::String::NewFromUtf8(v8_isolate, res.strValue.c_str());
       InstallInto(v8_isolate, result, keySV, value.ToLocalChecked());
       break;
     }
 
-    case v8_inspector::V8TypeCode::Number: {
+    case v8_inspector::V8TypeID::Number: {
       auto value = v8::Number::New(v8_isolate, res.numValue);
       InstallInto(v8_isolate, result, keySV, value);
       break;
@@ -1189,8 +1185,10 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 
   InstallNonemptyInto(v8_isolate, result, "_as_json_str", res.jsonValue);
   InstallNonemptyInto(v8_isolate, result, "_ctor_str", res.ctorName);
-  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.CommResultID);
-  InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.CommProxyID);
+  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.commResultID);
+  InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
+  Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
+  InstallInto(v8_isolate, result, "CommTypeID", typeCode);
 
   return result;
 }
@@ -1199,7 +1197,7 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value, const std::string& json = "") {
   auto res = v8_inspector::V8SerializeValue(isolate, value);
   res.jsonValue = json;
-  int typeCode = static_cast<int>(res.type);
+  int typeCode = static_cast<int>(res.commTypeID);
   BuiltinsLog() << " type=" << typeCode;
   if (!json.empty()) BuiltinsLog() << " json=" << json;
   idToResult.emplace(id, res);
@@ -1208,7 +1206,7 @@ bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value
 
 Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
   auto& res = idToResult[id];
-  BuiltinsLog() << " type=" << static_cast<int>(res.type) << " ctor=" << res.ctorName;
+  BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.ctorName;
   Handle<Object> result = DeserializeResult(isolate, res);
   idToResult.erase(id);
   return result;
@@ -1352,7 +1350,7 @@ BUILTIN(RunOnPaused) {
   );
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2"
-    << " type=" << static_cast<int>(result.type)
+    << " type=" << static_cast<int>(result.commTypeID)
     << " json=" << result.jsonValue
     << std::endl;
 
