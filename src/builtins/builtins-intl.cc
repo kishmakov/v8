@@ -1197,6 +1197,7 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value, const std::string& json = "") {
   auto res = v8_inspector::V8SerializeValue(isolate, value);
   res.jsonValue = json;
+  res.commResultID = id;
   int typeCode = static_cast<int>(res.commTypeID);
   BuiltinsLog() << " type=" << typeCode;
   if (!json.empty()) BuiltinsLog() << " json=" << json;
@@ -1205,6 +1206,11 @@ bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value
 }
 
 Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
+  if (idToResult.count(id) == 0) {
+    BuiltinsLog() << " failed to locate id=" << id;
+    return Handle<Object>(ReadOnlyRoots(isolate).undefined_value(), isolate);
+  }
+
   auto& res = idToResult[id];
   BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.ctorName;
   Handle<Object> result = DeserializeResult(isolate, res);
@@ -1229,7 +1235,7 @@ BUILTIN(WaitCall) {
 
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog() << my_counter << " WaitCall.2/3" << std::endl;
-  GetDebugger(v8_isolate)->waitCall(thread_id);
+  GetDebugger(v8_isolate)->waitCall(thread_id, id);
 
   BuiltinsLog() << my_counter << " WaitCall.3/3";
   Handle<Object> result = UnshelveValue(isolate, id);

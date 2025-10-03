@@ -2833,6 +2833,10 @@ void Debug::UpdateHookOnFunctionCall() {
       thread_local_.break_on_next_function_call_;
 }
 
+void Debug::SetBlackBoxPausesPolicy(bool value) {
+  thread_local_.allow_black_box_pauses_ = value;
+}
+
 void Debug::HandleDebugBreak(IgnoreBreakMode ignore_break_mode,
                              v8::debug::BreakReasons break_reasons) {
   RCS_SCOPE(isolate_, RuntimeCallCounterId::kDebugger);
@@ -2874,7 +2878,7 @@ void Debug::HandleDebugBreak(IgnoreBreakMode ignore_break_mode,
       bool ignore_break = ignore_break_mode == kIgnoreIfTopFrameBlackboxed
                               ? IsBlackboxed(shared)
                               : AllFramesOnStackAreBlackboxed();
-      if (ignore_break) return;
+      if (!thread_local_.allow_black_box_pauses_ && ignore_break) return;
       Handle<DebugInfo> debug_info;
       if (ToHandle(isolate_, TryGetDebugInfo(*shared), &debug_info) &&
           debug_info->HasBreakInfo()) {

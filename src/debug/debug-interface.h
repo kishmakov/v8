@@ -121,6 +121,9 @@ void ChangeBreakOnException(Isolate* isolate, ExceptionBreakState state);
 void RemoveBreakpoint(Isolate* isolate, BreakpointId id);
 void SetBreakPointsActive(Isolate* isolate, bool is_active);
 
+// allow pausing on blackboxed frames
+V8_EXPORT_PRIVATE void SetBlackBoxPausesPolicy(Isolate* isolate, bool value);
+
 enum StepAction {
   StepOut = 0,   // Step out of the current function.
   StepOver = 1,  // Step to the next statement in the current function.

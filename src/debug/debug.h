@@ -264,6 +264,7 @@ class V8_EXPORT_PRIVATE Debug {
   void OnCompileError(DirectHandle<Script> script);
   void OnAfterCompile(DirectHandle<Script> script);
 
+  void SetBlackBoxPausesPolicy(bool value);
   void HandleDebugBreak(IgnoreBreakMode ignore_break_mode,
                         debug::BreakReasons break_reasons);
 
@@ -693,6 +694,8 @@ class V8_EXPORT_PRIVATE Debug {
     // The source position at which breaking is muted. Only relevant if
     // muted_function_ is set.
     int muted_position_;
+
+    bool allow_black_box_pauses_ = false;
   };
 
   static void Iterate(RootVisitor* v, ThreadLocal* thread_local_data);

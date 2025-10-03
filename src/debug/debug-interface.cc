@@ -381,6 +381,12 @@ void SetBreakPointsActive(Isolate* v8_isolate, bool is_active) {
   isolate->debug()->set_break_points_active(is_active);
 }
 
+void SetBlackBoxPausesPolicy(Isolate* v8_isolate, bool value) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
+  ENTER_V8_NO_SCRIPT_NO_EXCEPTION(isolate);
+  isolate->debug()->SetBlackBoxPausesPolicy(value);
+}
+
 void PrepareStep(Isolate* v8_isolate, StepAction action) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
   ENTER_V8_BASIC(isolate);

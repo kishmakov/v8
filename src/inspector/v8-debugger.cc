@@ -47,6 +47,8 @@ thread_local std::string t_thread_id;
 
 v8::base::Mutex g_state_mutex;
 
+v8::base::Mutex g_cv_mutex; // protect access to g_internal_wait_cv only
+
 std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
@@ -59,10 +61,10 @@ bool g_task_is_async = false;
 #pragma clang diagnostic pop
 
 shared_cv GetCV(const std::string& id) {
+  v8::base::MutexGuard guard(&g_cv_mutex);
   if (!g_internal_wait_cv.contains(id)) {
     g_internal_wait_cv.emplace(id, std::make_shared<v8::base::ConditionVariable>());
   }
-
   return g_internal_wait_cv[id];
 }
 
@@ -548,7 +550,7 @@ void LogV8(const char* event, Args&&... args) {
   std::ostream& log = V8CallsLog();
   log << event;
   PairPrinter{log}(std::forward<Args>(args)...);
-  log << '\n';
+  log << std::endl;
 }
 
 v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
@@ -724,35 +726,62 @@ void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack.1/3", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async);
 
-  std::string target_id = g_task_target_id;
-  g_task_target_id = "";
+  // to run JS without any locks on g_main_mutex
+  std::string target_id = "";
+  std::string member_id;
+  std::string args_json;
+  bool is_async = false;
 
-  v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
+  {
+    v8::base::MutexGuard lk(&g_main_mutex);
+    if (g_task_target_id.empty()) {
+      LogV8("processTaskOnStack.3/3", "no_task_to_process");
+      return;
+    }
+
+    target_id.swap(g_task_target_id);
+    member_id = g_task_member_id;
+    args_json = g_task_args_json;
+    is_async = g_task_is_async;
+  }
+
+  const v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
 
   v8::HandleScope handle_scope(m_isolate);
-  v8::TryCatch try_catch(m_isolate);
+  const v8::TryCatch try_catch(m_isolate);
 
-  v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context);
-  if (call_function_candidate->IsUndefined()) return;
+  const v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context);
 
-  v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
+  if (call_function_candidate->IsUndefined()) {
+    g_main_cv.NotifyAll();
+    return;
+  }
 
-  v8::Local<v8::Value> v8_target = cppToV8(m_isolate, target_id);
-  v8::Local<v8::Value> v8_member = cppToV8(m_isolate, g_task_member_id);
-  v8::Local<v8::Value> v8_args = cppToV8(m_isolate, g_task_args_json);
-  v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, g_task_is_async);
+  const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
+
+  const v8::Local<v8::Value> v8_target = cppToV8(m_isolate, target_id);
+  const v8::Local<v8::Value> v8_member = cppToV8(m_isolate, member_id);
+  const v8::Local<v8::Value> v8_args = cppToV8(m_isolate, args_json);
+  const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, is_async);
 
   v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
 
-  v8::MaybeLocal<v8::Value> call_result = call_function->Call(v8_context, v8_context->Global(), 4, argv);
+  v8::MaybeLocal<v8::Value> call_result =
+    call_function->Call(v8_context, v8_context->Global(), 4, argv);
 
+  V8ExecutionResult local_result{};
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
     LogV8("processTaskOnStack.3/3", "failed with exception", *msg ? *msg : "<unknown>");
   } else {
     LogV8("processTaskOnStack.2/3");
-    g_result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
-    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(g_result.commTypeID));
+    local_result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
+    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(local_result.commTypeID));
+  }
+
+  {
+    v8::base::MutexGuard lk(&g_main_mutex);
+    g_result = local_result;
   }
 
   g_main_cv.NotifyAll();
@@ -764,6 +793,13 @@ void V8Debugger::handleProgramBreak(
     v8::debug::BreakReasons breakReasons,
     v8::debug::ExceptionType exceptionType, bool isUncaught) {
   // Don't allow nested breaks.
+  LogV8("handleProgramBreak.0/2",
+    "break_reasons", breakReasons.ToIntegral(),
+    "is_paused", isPaused(),
+    "m_targetContextGroupId", m_targetContextGroupId,
+    "contextGroupId", m_inspector->contextGroupId(pausedContext)
+  );
+
   if (isPaused()) return;
 
   int contextGroupId = m_inspector->contextGroupId(pausedContext);
@@ -775,17 +811,23 @@ void V8Debugger::handleProgramBreak(
   // We intentionally do not emit Debugger paused/resumed events.
   // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
+    LogV8("handleProgramBreak.1/2");
     v8::Context::Scope scope(pausedContext);
-    v8::base::MutexGuard guard(&g_state_mutex);
 
     shared_cv cv = GetCV(t_thread_id);
-    while (g_paused_thread_ids.contains(t_thread_id)) {
-      cv->Wait(&g_state_mutex);
-      if (!g_task_target_id.empty()) {
-        processTaskOnStack();
+
+    for (;;) {
+      {
+        v8::base::MutexGuard guard(&g_state_mutex);
+        if (!g_paused_thread_ids.contains(t_thread_id)) break;
+        cv->Wait(&g_state_mutex);
       }
+
+      // outside of g_state_mutex to avoid re-entrant locking on isThreadPaused
+      processTaskOnStack();
     }
 
+    LogV8("handleProgramBreak.2/2");
     m_targetContextGroupId = 0;
     return;
   }
@@ -1735,14 +1777,17 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-void V8Debugger::waitCall(const std::string& thread_id) {
-  LogV8("waitCall.1/3", "thread_id", thread_id);
+void V8Debugger::waitCall(const std::string& thread_id, const std::string& id) {
+  LogV8("waitCall.1/3", "thread_id", thread_id, "id", id, "group id", m_targetContextGroupId);
   if (!enabled()) return;
+
+  v8::debug::SetBlackBoxPausesPolicy(m_isolate, true);
 
   if (!isPaused()) {
     v8::base::MutexGuard guard(&g_state_mutex);
     t_thread_id = thread_id;
     g_paused_thread_ids.insert(thread_id);
+    (void)GetCV(thread_id); // construct CV to avoid races with resume/runOnPaused
     LogV8("waitCall.2/3 [preparing]", "thread_id", thread_id);
   } else {
     LogV8("waitCall.3/3 [skip already paused]", "thread_id", thread_id);
@@ -1771,6 +1816,8 @@ void V8Debugger::resumeCall(const std::string& thread_id) {
     cv->NotifyAll();
   }
 
+  v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
+
   LogV8("resumeCall.2/2 [signaled]", "thread_id", thread_id);
 }
 
@@ -1793,14 +1840,19 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
   if (!enabled()) return g_result;
   LogV8("runOnPaused.1/2", "thread_id", thread_id);
 
-  g_task_target_id = target_id;
-  g_task_member_id = member_id;
-  g_task_args_json = args_json;
-  g_task_is_async = is_async;
 
-  auto cv = GetCV(thread_id);
-  cv->NotifyAll();
+  { // publishing is under g_main_mutex
+    v8::base::MutexGuard lk(&g_main_mutex);
+    g_task_target_id = target_id;
+    g_task_member_id = member_id;
+    g_task_args_json = args_json;
+    g_task_is_async = is_async;
+  }
 
+  // wake up the paused thread to process the task
+  GetCV(thread_id)->NotifyAll();
+
+  // wait until the paused thread produces a result
   v8::base::MutexGuard guard(&g_main_mutex);
   while (!g_task_target_id.empty()) {
     g_main_cv.Wait(&g_main_mutex);
