@@ -2839,6 +2839,11 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),
                     Builtin::kResumeType, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "CheckObjectFullyConstructed", JS_PRIMITIVE_WRAPPER_TYPE,
+            JSPrimitiveWrapper::kHeaderSize, 0,
+            isolate_->initial_object_prototype(),
+            Builtin::kCheckObjectFullyConstructed, 1, kDontAdapt);
   }
 
   {  // --- S t r i n g ---

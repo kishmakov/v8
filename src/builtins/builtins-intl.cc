@@ -48,6 +48,7 @@
 #include "src/objects/property-descriptor.h"
 #include "src/objects/smi.h"
 #include "unicode/brkiter.h"
+#include "src/execution/frames-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -1233,6 +1234,10 @@ BUILTIN(WaitCall) {
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
+  if (!GetDebugger(v8_isolate)->enabled()) {
+    GetDebugger(v8_isolate)->enable();
+  }
+
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog() << my_counter << " WaitCall.2/3" << std::endl;
   GetDebugger(v8_isolate)->waitCall(thread_id, id);
@@ -1361,6 +1366,30 @@ BUILTIN(RunOnPaused) {
     << std::endl;
 
   return *DeserializeResult(isolate, result);
+}
+
+
+BUILTIN(CheckObjectFullyConstructed) {
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  Handle<Object> candidate = args.atOrUndefined(isolate, 1);
+  // Non-object cannot be "constructed" in the sense we check.
+  if (!IsJSReceiver(*candidate)) return ReadOnlyRoots(isolate).false_value();
+
+  bool still_constructing = false;
+  // Iterate current stack & check active constructor frames receivers
+  for (StackFrameIterator it(isolate); !it.done(); it.Advance()) {
+    StackFrame* frame = it.frame();
+    if (!frame->is_javascript()) continue;
+    JavaScriptFrame* js = JavaScriptFrame::cast(frame);
+    if (js->IsConstructor() && js->receiver() == *candidate) {
+      still_constructing = true;
+      break;
+    }
+  }
+
+  return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, !still_constructing));
 }
 
 BUILTIN(PluralRulesConstructor) {
