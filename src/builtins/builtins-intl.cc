@@ -1374,8 +1374,8 @@ BUILTIN(CheckObjectFullyConstructed) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   Handle<Object> candidate = args.atOrUndefined(isolate, 1);
-  // Non-object cannot be "constructed" in the sense we check.
-  if (!IsJSReceiver(*candidate)) return ReadOnlyRoots(isolate).false_value();
+  // non-object cannot be "non-constructed"
+  if (!IsJSReceiver(*candidate)) return ReadOnlyRoots(isolate).true_value();
 
   bool still_constructing = false;
   // Iterate current stack & check active constructor frames receivers
