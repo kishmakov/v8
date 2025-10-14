@@ -1256,7 +1256,7 @@ BUILTIN(ResumeCall) {
   std::string thread_id = IdToString(args, isolate, 1);
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 2));
 
-  auto result_ser = v8_inspector::V8SerializeResult2(v8_isolate, result_v8);
+  auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
 
   bool value_saved = ShelveValue(std::move(result_ser));
@@ -1306,7 +1306,8 @@ BUILTIN(ResumeType) {
 
   std::string thread_id = IdToString(args, isolate, 1);
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 2));
-  auto result_ser = v8_inspector::V8SerializeResult2(v8_isolate, result_v8);
+
+  auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
 
   shared_cv cv = GetCV(thread_id);

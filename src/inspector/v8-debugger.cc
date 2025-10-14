@@ -640,25 +640,6 @@ std::string GetOptionalStr(v8::Isolate* isolate,
   return *utf8;
 }
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
-                                    const v8::Local<v8::Value> result_ser) {
-  v8::Local<v8::String> comm_value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
-  const auto& context = isolate->GetCurrentContext();
-
-  v8::Local<v8::Value> comm_value_value;
-  if (!result_ser.As<v8::Object>()->Get(context, comm_value_key).ToLocal(&comm_value_value)) {
-    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
-    return V8ExecutionResult{};
-  }
-
-  V8ExecutionResult result = V8SerializeValue(isolate, comm_value_value);
-
-  result.commResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
-  result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
-
-  return result;
-}
-
 }  // namespace
 
 V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
@@ -691,53 +672,45 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeID::Other;
 }
 
-V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
-                                   const v8::Local<v8::Value> value) {
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
+                                    const v8::Local<v8::Value> result_ser) {
+  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
+
+  v8::Local<v8::Value> value_value;
+  const auto& context = isolate->GetCurrentContext();
+  if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
+    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
+    return V8ExecutionResult{};
+  }
+
   v8::HandleScope handle_scope(isolate);
 
-  V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate, value),
-                           .ctorName = SafeCtorName(isolate, value)};
+  V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate, value_value),
+                           .ctorName = SafeCtorName(isolate, value_value)};
 
   switch (result.commTypeID) {
     case V8TypeID::Boolean: {
-      result.boolValue = value.As<v8::Boolean>()->Value();
+      result.boolValue = value_value.As<v8::Boolean>()->Value();
       break;
     }
 
     case V8TypeID::String: {
-      v8::String::Utf8Value utf8(isolate, value);
+      v8::String::Utf8Value utf8(isolate, value_value);
       if (*utf8) result.strValue.assign(*utf8, utf8.length());
       break;
     }
 
     case V8TypeID::Number: {
-      const auto& context = isolate->GetCurrentContext();
-      result.numValue = value->NumberValue(context).FromMaybe(0.0);
+      result.numValue = value_value->NumberValue(context).FromMaybe(0.0);
       break;
     }
 
     default: break;
   }
 
-  return result;
-}
-
-V8ExecutionResult V8SerializeResult2(v8::Isolate* isolate,
-                                    const v8::Local<v8::Value> result_ser) {
-  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
-
-  const auto& context = isolate->GetCurrentContext();
-
-  v8::Local<v8::Value> value_value;
-  if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
-    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
-    return V8ExecutionResult{};
-  }
-
-  V8ExecutionResult result = V8SerializeValue(isolate, value_value);
-
   result.commResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
   result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
+  result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
 
   return result;
 }
