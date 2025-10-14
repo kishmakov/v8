@@ -68,12 +68,11 @@ struct V8ExecutionResult {
   std::string commResultID = "";
   std::string commProxyID = "";
   std::string commJSON = "";
+  std::string commProto = "";
 
   bool boolValue = false;
   std::string strValue = "";
   double numValue = 0.0;
-
-  std::string ctorName = "";
 };
 
 V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> value);

@@ -686,7 +686,7 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
   v8::HandleScope handle_scope(isolate);
 
   V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate, value_value),
-                           .ctorName = SafeCtorName(isolate, value_value)};
+                           .commProto = SafeCtorName(isolate, value_value)};
 
   switch (result.commTypeID) {
     case V8TypeID::Boolean: {

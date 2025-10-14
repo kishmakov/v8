@@ -1184,12 +1184,12 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     default: break;
   }
 
-  InstallNonemptyInto(v8_isolate, result, "_ctor_str", res.ctorName);
   InstallNonemptyInto(v8_isolate, result, "CommResultID", res.commResultID);
   InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
   Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
   InstallInto(v8_isolate, result, "CommTypeID", typeCode);
   InstallNonemptyInto(v8_isolate, result, "CommJSON", res.commJSON);
+  InstallNonemptyInto(v8_isolate, result, "CommProtoID", res.commProto);
 
   return result;
 }
@@ -1211,7 +1211,7 @@ Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
   }
 
   auto& res = idToResult[id];
-  BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.ctorName;
+  BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.commProto;
   Handle<Object> result = DeserializeResult(isolate, res);
   idToResult.erase(id);
   return result;
