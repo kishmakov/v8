@@ -67,16 +67,17 @@ struct V8ExecutionResult {
   V8TypeID commTypeID = V8TypeID::Other;
   std::string commResultID = "";
   std::string commProxyID = "";
+  std::string commJSON = "";
 
   bool boolValue = false;
   std::string strValue = "";
   double numValue = 0.0;
 
-  std::string jsonValue = "";
   std::string ctorName = "";
 };
 
 V8ExecutionResult V8SerializeValue(v8::Isolate* isolate, v8::Local<v8::Value> value);
+V8ExecutionResult V8SerializeResult2(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
 class V8Debugger : public v8::debug::DebugDelegate,
                    public v8::debug::AsyncEventDelegate {

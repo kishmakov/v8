@@ -722,6 +722,27 @@ V8ExecutionResult V8SerializeValue(v8::Isolate* isolate,
   return result;
 }
 
+V8ExecutionResult V8SerializeResult2(v8::Isolate* isolate,
+                                    const v8::Local<v8::Value> result_ser) {
+  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
+
+  const auto& context = isolate->GetCurrentContext();
+
+  v8::Local<v8::Value> value_value;
+  if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
+    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
+    return V8ExecutionResult{};
+  }
+
+  V8ExecutionResult result = V8SerializeValue(isolate, value_value);
+
+  result.commResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
+  result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
+
+  return result;
+}
+
+
 void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack.1/3", "target", g_task_target_id,
     "member", g_task_member_id, "is_async", g_task_is_async);

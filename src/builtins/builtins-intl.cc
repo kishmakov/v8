@@ -1184,12 +1184,12 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     default: break;
   }
 
-  InstallNonemptyInto(v8_isolate, result, "_as_json_str", res.jsonValue);
   InstallNonemptyInto(v8_isolate, result, "_ctor_str", res.ctorName);
   InstallNonemptyInto(v8_isolate, result, "CommResultID", res.commResultID);
   InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
   Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
   InstallInto(v8_isolate, result, "CommTypeID", typeCode);
+  InstallNonemptyInto(v8_isolate, result, "CommJSON", res.commJSON);
 
   return result;
 }
@@ -1197,12 +1197,21 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 // true if value was serialized
 bool ShelveValue(v8::Isolate* isolate, const std::string& id, Local<Value> value, const std::string& json = "") {
   auto res = v8_inspector::V8SerializeValue(isolate, value);
-  res.jsonValue = json;
+  res.commJSON = json;
   res.commResultID = id;
   int typeCode = static_cast<int>(res.commTypeID);
   BuiltinsLog() << " type=" << typeCode;
   if (!json.empty()) BuiltinsLog() << " json=" << json;
   idToResult.emplace(id, res);
+  return typeCode < 100;
+}
+
+bool ShelveValue2(v8_inspector::V8ExecutionResult&& res) {
+  int typeCode = static_cast<int>(res.commTypeID);
+  BuiltinsLog() << " type=" << typeCode;
+  if (!res.commJSON.empty()) BuiltinsLog() << " json=" << res.commJSON;
+  auto key = res.commResultID;  // copy to keep value inside res
+  idToResult.emplace(std::move(key), std::move(res));
   return typeCode < 100;
 }
 
@@ -1307,17 +1316,15 @@ BUILTIN(ResumeType) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  std::string id = IdToString(args, isolate, 2);
-  Local<Value> object = Utils::ToLocal(args.atOrUndefined(isolate, 3));
-  std::string object_str = IdToString(args, isolate, 4);
-
-  BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
+  Local<Value> result = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  auto result_ser = v8_inspector::V8SerializeResult2(v8_isolate, result);
+  BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
 
   shared_cv cv = GetCV(thread_id);
   std::lock_guard<std::mutex> lock(mtx);
 
   BuiltinsLog() << my_counter << " ResumeType.2/2";
-  ShelveValue(v8_isolate, id, object, object_str);
+  ShelveValue2(std::move(result_ser));
   BuiltinsLog() << std::endl;
 
   cv->notify_one();
@@ -1362,7 +1369,7 @@ BUILTIN(RunOnPaused) {
 
   BuiltinsLog() << my_counter << " RunOnPaused.2/2"
     << " type=" << static_cast<int>(result.commTypeID)
-    << " json=" << result.jsonValue
+    << " json=" << result.commJSON
     << std::endl;
 
   return *DeserializeResult(isolate, result);
