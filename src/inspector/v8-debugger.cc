@@ -58,6 +58,16 @@ std::string g_task_member_id = "";
 std::string g_task_args_json = "";
 bool g_task_is_async = false;
 
+// Global state for runOnColdWorker (running thread execution)
+v8::base::Mutex g_cold_worker_mutex;
+v8::base::ConditionVariable g_cold_worker_cv;
+std::string g_cold_worker_target_id = "";
+std::string g_cold_worker_member_id = "";
+std::string g_cold_worker_args_json = "";
+bool g_cold_worker_is_async = false;
+V8ExecutionResult g_cold_worker_result;
+bool g_cold_worker_completed = false;
+
 #pragma clang diagnostic pop
 
 shared_cv GetCV(const std::string& id) {
@@ -617,6 +627,38 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   return function_value;
 }
 
+v8::Local<v8::Value> GetCallFunctionRunning(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context) {
+  v8::Local<v8::Object> global = v8_context->Global();
+
+  v8::Local<v8::String> context_key = v8::String::NewFromUtf8Literal(v8_isolate, "context");
+  v8::Local<v8::Value> context_value;
+
+  if (!global->Get(v8_context, context_key).ToLocal(&context_value)) {
+    LogV8("GetCallFunctionRunning", "failed to locate global.context");
+    return v8::Undefined(v8_isolate);
+  }
+
+  if (context_value->IsUndefined() || !context_value->IsObject()) {
+    LogV8("GetCallFunctionRunning", "global.context is not an object");
+    return v8::Undefined(v8_isolate);
+  }
+
+  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "callWorkerFunctionRunning");
+  v8::Local<v8::Value> function_value;
+
+  if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
+    LogV8("GetCallFunctionRunning", "failed to locate context.callWorkerFunctionRunning");
+    return v8::Undefined(v8_isolate);
+  }
+
+  if (function_value->IsUndefined() || !function_value->IsFunction()) {
+    LogV8("GetCallFunctionRunning", "context.callWorkerFunctionRunning is not a function");
+    return v8::Undefined(v8_isolate);
+  }
+
+  return function_value;
+}
+
 std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   v8::HandleScope handle_scope(isolate);
   if (!value->IsObject()) return "";
@@ -779,6 +821,83 @@ void V8Debugger::processTaskOnStack() const {
   }
 
   g_main_cv.NotifyAll();
+}
+
+void V8Debugger::executeColdWorkerTask(v8::Isolate* isolate) {
+  LogV8("executeColdWorkerTask.1/3", "interrupt_handler_called");
+
+  // Get task parameters
+  std::string target_id;
+  std::string member_id;
+  std::string args_json;
+  bool is_async = false;
+
+  {
+    v8::base::MutexGuard lk(&g_cold_worker_mutex);
+    target_id = g_cold_worker_target_id;
+    member_id = g_cold_worker_member_id;
+    args_json = g_cold_worker_args_json;
+    is_async = g_cold_worker_is_async;
+  }
+
+  if (target_id.empty()) {
+    LogV8("executeColdWorkerTask.3/3", "no_task_to_execute");
+    return;
+  }
+
+  // Execute the task in the worker's context
+  const v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
+
+  if (v8_context.IsEmpty()) {
+    LogV8("executeColdWorkerTask.3/3", "no_current_context");
+    v8::base::MutexGuard lk(&g_cold_worker_mutex);
+    g_cold_worker_result = V8ExecutionResult{};
+    g_cold_worker_completed = true;
+    g_cold_worker_cv.NotifyAll();
+    return;
+  }
+
+  v8::HandleScope handle_scope(isolate);
+  v8::Context::Scope context_scope(v8_context);
+  const v8::TryCatch try_catch(isolate);
+
+  const v8::Local<v8::Value> call_function_candidate = GetCallFunctionRunning(isolate, v8_context);
+
+  V8ExecutionResult local_result{};
+
+  if (call_function_candidate->IsUndefined()) {
+    LogV8("executeColdWorkerTask.3/3", "failed to locate callWorkerFunctionRunning");
+  } else {
+    const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
+
+    const v8::Local<v8::Value> v8_target = cppToV8(isolate, target_id);
+    const v8::Local<v8::Value> v8_member = cppToV8(isolate, member_id);
+    const v8::Local<v8::Value> v8_args = cppToV8(isolate, args_json);
+    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, is_async);
+
+    v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
+
+    v8::MaybeLocal<v8::Value> call_result =
+      call_function->Call(v8_context, v8_context->Global(), 4, argv);
+
+    if (try_catch.HasCaught() || call_result.IsEmpty()) {
+      v8::String::Utf8Value msg(isolate, try_catch.Exception());
+      LogV8("executeColdWorkerTask.3/3", "failed with exception", *msg ? *msg : "<unknown>");
+    } else {
+      LogV8("executeColdWorkerTask.2/3");
+      local_result = V8SerializeResult(isolate, call_result.ToLocalChecked());
+      LogV8("executeColdWorkerTask.3/3", "type", static_cast<int>(local_result.commTypeID));
+    }
+  }
+
+  // Store result and signal completion
+  {
+    v8::base::MutexGuard lk(&g_cold_worker_mutex);
+    g_cold_worker_result = local_result;
+    g_cold_worker_completed = true;
+  }
+
+  g_cold_worker_cv.NotifyAll();
 }
 
 void V8Debugger::handleProgramBreak(
@@ -1854,6 +1973,56 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
 
   LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_result.commTypeID));
   return g_result;
+}
+
+V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
+                             const std::string& target_id,
+                             const std::string& member_id,
+                             const std::string& args_json,
+                             bool is_async) {
+  if (!enabled()) return V8ExecutionResult{};
+  LogV8("runOnColdWorker.1/4", "thread", thread_id, "target", target_id, "member", member_id, "is_async", is_async);
+
+  // Prepare the task to be executed on the worker thread
+  {
+    v8::base::MutexGuard lk(&g_cold_worker_mutex);
+    g_cold_worker_target_id = target_id;
+    g_cold_worker_member_id = member_id;
+    g_cold_worker_args_json = args_json;
+    g_cold_worker_is_async = is_async;
+    g_cold_worker_completed = false;
+  }
+
+  // Schedule interrupt on the worker's isolate to execute the task
+  m_isolate->RequestInterrupt(
+      [](v8::Isolate* isolate, void* data) {
+        LogV8("ColdColdCold", "1");
+        V8Debugger* debugger = static_cast<V8Debugger*>(data);
+        debugger->executeColdWorkerTask(isolate);
+        LogV8("ColdColdCold", "2");
+      },
+      this);
+
+  LogV8("runOnColdWorker.2/4", "interrupt_requested");
+
+  // Wait for the worker thread to complete the task
+  v8::base::MutexGuard guard(&g_cold_worker_mutex);
+  while (!g_cold_worker_completed) {
+    g_cold_worker_cv.Wait(&g_cold_worker_mutex);
+  }
+
+  LogV8("runOnColdWorker.3/4", "task_completed", "type", static_cast<int>(g_cold_worker_result.commTypeID));
+
+  V8ExecutionResult result = g_cold_worker_result;
+
+  // Clean up
+  g_cold_worker_target_id = "";
+  g_cold_worker_member_id = "";
+  g_cold_worker_args_json = "";
+  g_cold_worker_result = V8ExecutionResult{};
+
+  LogV8("runOnColdWorker.4/4", "returning_result");
+  return result;
 }
 
 }  // namespace v8_inspector

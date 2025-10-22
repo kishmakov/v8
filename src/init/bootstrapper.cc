@@ -2830,6 +2830,11 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                 isolate_->initial_object_prototype(),
                 Builtin::kRunOnPaused, 1, kDontAdapt);
 
+    InstallFunction(isolate_, global, "RunOnCold", JS_PRIMITIVE_WRAPPER_TYPE,
+            JSPrimitiveWrapper::kHeaderSize, 0,
+            isolate_->initial_object_prototype(),
+            Builtin::kRunOnCold, 1, kDontAdapt);
+
     InstallFunction(isolate_, global, "WaitType", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),

@@ -115,6 +115,11 @@ class V8Debugger : public v8::debug::DebugDelegate,
                    const std::string& member_id,
                    const std::string& args_json,
                    bool is_async);
+  V8ExecutionResult runOnColdWorker(const std::string& thread_id,
+                   const std::string& target_id,
+                   const std::string& member_id,
+                   const std::string& args_json,
+                   bool is_async);
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);
@@ -204,6 +209,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void installTerminateExecutionCallbacks(v8::Local<v8::Context> context);
 
   void processTaskOnStack() const;
+  void executeColdWorkerTask(v8::Isolate* isolate);
   void handleProgramBreak(
       v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
       const std::vector<v8::debug::BreakpointId>& hitBreakpoints,

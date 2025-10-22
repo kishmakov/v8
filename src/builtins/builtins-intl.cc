@@ -1365,6 +1365,36 @@ BUILTIN(RunOnPaused) {
   return *DeserializeResult(isolate, result);
 }
 
+BUILTIN(RunOnCold) {
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " RunOnCold.1/2";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string target_id = IdToString(args, isolate, 2);
+  std::string member_id = IdToString(args, isolate, 3);
+  std::string str_args = IdToString(args, isolate, 4);
+  bool is_async = IdToBool(args, isolate, 5);
+
+  BuiltinsLog() << " thread=" << thread_id
+    << " target=" << target_id
+    << " member=" << member_id
+    << " str_args=" << str_args
+    << std::endl;
+
+  auto result = GetDebugger(v8_isolate)->runOnColdWorker(
+    thread_id, target_id, member_id, str_args, is_async
+  );
+
+  BuiltinsLog() << my_counter << " RunOnCold.2/2"
+    << " type=" << static_cast<int>(result.commTypeID)
+    << " json=" << result.commJSON
+    << std::endl;
+
+  return *DeserializeResult(isolate, result);
+}
 
 BUILTIN(CheckObjectFullyConstructed) {
   HandleScope scope(isolate);
