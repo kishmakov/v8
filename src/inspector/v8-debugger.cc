@@ -6,15 +6,21 @@
 
 #include <algorithm>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
 #include "include/v8-container.h"
 #include "include/v8-context.h"
 #include "include/v8-function.h"
+#include "include/v8-locker.h"
 #include "include/v8-microtask-queue.h"
+#include "include/v8-platform.h"
 #include "include/v8-profiler.h"
 #include "include/v8-util.h"
+#include "libplatform/libplatform.h"
+#include "src/base/platform/time.h"
+#include "src/debug/debug-interface.h"  // For StackTraceIterator/ScopeIterator
 #include "src/inspector/inspected-context.h"
 #include "src/inspector/protocol/Protocol.h"
 #include "src/inspector/string-util.h"
@@ -25,7 +31,6 @@
 #include "src/inspector/v8-runtime-agent-impl.h"
 #include "src/inspector/v8-stack-trace-impl.h"
 #include "src/inspector/v8-value-utils.h"
-#include "src/debug/debug-interface.h"  // For StackTraceIterator/ScopeIterator
 
 namespace v8_inspector {
 
@@ -53,6 +58,10 @@ std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
 
+// Mapping from worker thread_id to its V8 isolate (for cold execution path)
+v8::base::Mutex g_worker_map_mutex;
+std::unordered_map<std::string, v8::Isolate*> g_worker_thread_isolates;
+
 std::string g_task_target_id = "";
 std::string g_task_member_id = "";
 std::string g_task_args_json = "";
@@ -77,6 +86,63 @@ shared_cv GetCV(const std::string& id) {
   }
   return g_internal_wait_cv[id];
 }
+
+struct PairPrinter {
+  std::ostream& log;
+  void operator()() const {}
+  template <typename K, typename V, typename... Rest>
+  void operator()(K&& k, V&& v, Rest&&... rest) const {
+    log << ' ' << k << '=' << v;
+    (*this)(std::forward<Rest>(rest)...);
+  }
+  template <typename K>
+  void operator()(K&& k) const { log << ' ' << k; }
+};
+
+std::ostream& V8CallsLog() {
+  static std::ostream* active = []() -> std::ostream* {
+    const char* dir = std::getenv("ISOLATION_LOG_DIR");
+    if (dir && dir[0] != '\0') {
+      std::string path = std::string(dir) + "/log_v8_calls.txt";
+      auto* fs = new std::ofstream(path, std::ios::app);
+      return fs; // real log
+    }
+    struct NullBuf : public std::streambuf {
+      int overflow(int c) override { return c; }
+    };
+    auto* null_buf = new NullBuf();
+    return new std::ostream(null_buf); // fallback dummy log
+  }();
+  return *active;
+}
+
+template <typename... Args>
+void LogV8(const char* event, Args&&... args) {
+  static std::mutex log_mutex;
+  std::lock_guard<std::mutex> lk(log_mutex);
+
+  std::ostream& log = V8CallsLog();
+  log << event;
+  PairPrinter{log}(std::forward<Args>(args)...);
+  log << std::endl;
+}
+
+class PokeTask : public v8::Task {
+ public:
+  explicit PokeTask(v8::Isolate* isolate) : isolate_(isolate) {}
+  void Run() override {
+    LogV8("Cold:PokeTask:Run 1");
+    v8::Locker locker(isolate_);
+    v8::Isolate::Scope isolate_scope(isolate_);
+    v8::HandleScope handle_scope(isolate_);
+    // Touch a debug API that enters V8 VM without requiring a context.
+    LogV8("Cold:PokeTask:Run 2");
+    auto it = v8::debug::StackTraceIterator::Create(isolate_);
+    (void)it;
+  }
+ private:
+  v8::Isolate* isolate_;
+};
 
 template <typename Map>
 void cleanupExpiredWeakPointers(Map& map) {
@@ -523,46 +589,6 @@ void V8Debugger::clearContinueToLocation() {
 
 namespace {
 
-std::ostream& V8CallsLog() {
-  static std::ostream* active = []() -> std::ostream* {
-    const char* dir = std::getenv("ISOLATION_LOG_DIR");
-    if (dir && dir[0] != '\0') {
-      std::string path = std::string(dir) + "/log_v8_calls.txt";
-      auto* fs = new std::ofstream(path, std::ios::app);
-      return fs; // real log
-    }
-    struct NullBuf : public std::streambuf {
-      int overflow(int c) override { return c; }
-    };
-    auto* null_buf = new NullBuf();
-    return new std::ostream(null_buf); // fallback dummy log
-  }();
-  return *active;
-}
-
-struct PairPrinter {
-  std::ostream& log;
-  void operator()() const {}
-  template <typename K, typename V, typename... Rest>
-  void operator()(K&& k, V&& v, Rest&&... rest) const {
-    log << ' ' << k << '=' << v;
-    (*this)(std::forward<Rest>(rest)...);
-  }
-  template <typename K>
-  void operator()(K&& k) const { log << ' ' << k; }
-};
-
-template <typename... Args>
-void LogV8(const char* event, Args&&... args) {
-  static std::mutex log_mutex;
-  std::lock_guard<std::mutex> lk(log_mutex);
-
-  std::ostream& log = V8CallsLog();
-  log << event;
-  PairPrinter{log}(std::forward<Args>(args)...);
-  log << std::endl;
-}
-
 v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
   if (value.empty()) return v8::Null(isolate);
 
@@ -892,6 +918,7 @@ void V8Debugger::executeColdWorkerTask(v8::Isolate* isolate) {
 
   // Store result and signal completion
   {
+    LogV8("executeColdWorkerTask.4/3", "successfuly finished");
     v8::base::MutexGuard lk(&g_cold_worker_mutex);
     g_cold_worker_result = local_result;
     g_cold_worker_completed = true;
@@ -1968,7 +1995,13 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
   // wait until the paused thread produces a result
   v8::base::MutexGuard guard(&g_main_mutex);
   while (!g_task_target_id.empty()) {
-    g_main_cv.Wait(&g_main_mutex);
+    // Release the V8 isolate lock while waiting, if held.
+    if (v8::Locker::IsLocked(m_isolate)) {
+      v8::Unlocker unlocker(m_isolate);
+      g_main_cv.Wait(&g_main_mutex);
+    } else {
+      g_main_cv.Wait(&g_main_mutex);
+    }
   }
 
   LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_result.commTypeID));
@@ -1981,7 +2014,20 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
                              const std::string& args_json,
                              bool is_async) {
   if (!enabled()) return V8ExecutionResult{};
-  LogV8("runOnColdWorker.1/4", "thread", thread_id, "target", target_id, "member", member_id, "is_async", is_async);
+  LogV8("runOnColdWorker.1/7", "thread", thread_id, "target", target_id, "member", member_id, "is_async", is_async);
+
+  // Resolve the target isolate for this worker thread_id.
+  v8::Isolate* target_isolate = nullptr;
+  {
+    v8::base::MutexGuard lk(&g_worker_map_mutex);
+    auto it = g_worker_thread_isolates.find(thread_id);
+    if (it != g_worker_thread_isolates.end()) target_isolate = it->second;
+  }
+
+  if (!target_isolate) {
+    LogV8("runOnColdWorker.ERROR", "no_isolate_for_thread", thread_id);
+    return V8ExecutionResult{};
+  }
 
   // Prepare the task to be executed on the worker thread
   {
@@ -1993,25 +2039,37 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
     g_cold_worker_completed = false;
   }
 
+  // Post a foreground poke task to force the worker isolate thread to enter V8 and drain the interrupt.
+  auto* platform = v8::debug::GetCurrentPlatform();
+  auto runner = platform->GetForegroundTaskRunner(target_isolate);
+  runner->PostTask(std::make_unique<PokeTask>(target_isolate));
+  LogV8("runOnColdWorker.2/7", "poke_posted");
+
   // Schedule interrupt on the worker's isolate to execute the task
-  m_isolate->RequestInterrupt(
-      [](v8::Isolate* isolate, void* data) {
+  target_isolate->RequestInterrupt(
+      [](v8::Isolate* isolate, void* /*data*/) {
         LogV8("ColdColdCold", "1");
-        V8Debugger* debugger = static_cast<V8Debugger*>(data);
-        debugger->executeColdWorkerTask(isolate);
+        V8InspectorImpl* inspector =
+            static_cast<V8InspectorImpl*>(v8::debug::GetInspector(isolate));
+        if (inspector) {
+          V8Debugger* debugger = inspector->debugger();
+          debugger->executeColdWorkerTask(isolate);
+        }
         LogV8("ColdColdCold", "2");
       },
-      this);
+      nullptr);
 
-  LogV8("runOnColdWorker.2/4", "interrupt_requested");
+  LogV8("runOnColdWorker.3/7", "interrupt_requested");
 
-  // Wait for the worker thread to complete the task
+  // Wait for the worker thread to complete the task.
   v8::base::MutexGuard guard(&g_cold_worker_mutex);
+  LogV8("runOnColdWorker.4/7", "mutex_gained");
   while (!g_cold_worker_completed) {
+    LogV8("runOnColdWorker.5/7", "going to wait");
     g_cold_worker_cv.Wait(&g_cold_worker_mutex);
   }
 
-  LogV8("runOnColdWorker.3/4", "task_completed", "type", static_cast<int>(g_cold_worker_result.commTypeID));
+  LogV8("runOnColdWorker.6/7", "task_completed", "type", static_cast<int>(g_cold_worker_result.commTypeID));
 
   V8ExecutionResult result = g_cold_worker_result;
 
@@ -2021,8 +2079,15 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
   g_cold_worker_args_json = "";
   g_cold_worker_result = V8ExecutionResult{};
 
-  LogV8("runOnColdWorker.4/4", "returning_result");
+  LogV8("runOnColdWorker.7/7", "returning_result");
   return result;
+}
+
+void V8Debugger::registerWorkerThread(const std::string& thread_id) const {
+  if (thread_id.empty()) return;
+  v8::base::MutexGuard lk(&g_worker_map_mutex);
+  g_worker_thread_isolates[thread_id] = m_isolate;
+  LogV8("registerWorkerThread", "thread", thread_id);
 }
 
 }  // namespace v8_inspector

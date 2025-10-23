@@ -2139,8 +2139,9 @@ namespace internal {
   CPP(WaitType, kDontAdaptArgumentsSentinel)                                   \
   CPP(ResumeType, kDontAdaptArgumentsSentinel)                                 \
   CPP(IsThreadPaused, kDontAdaptArgumentsSentinel)                             \
-  CPP(RunOnPaused, kDontAdaptArgumentsSentinel)                                \
+  CPP(RegisterWorker, kDontAdaptArgumentsSentinel)                             \
   CPP(RunOnCold, kDontAdaptArgumentsSentinel)                                  \
+  CPP(RunOnPaused, kDontAdaptArgumentsSentinel)                                \
   CPP(CheckObjectFullyConstructed, kDontAdaptArgumentsSentinel)                \
   /* ES #sec-string.prototype.tolowercase */                                   \
   TFJ(StringPrototypeToLowerCaseIntl, kJSArgcReceiverSlots, kReceiver)         \

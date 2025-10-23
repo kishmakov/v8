@@ -1334,6 +1334,24 @@ BUILTIN(IsThreadPaused) {
   return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, is_paused));
 }
 
+BUILTIN(RegisterWorker) {
+  int my_counter = ++counter;
+  BuiltinsLog() << my_counter << " RegisterWorker.1/2";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  std::string thread_id = IdToString(args, isolate, 1);
+
+  BuiltinsLog() << " thread=" << thread_id << std::endl;
+
+  GetDebugger(v8_isolate)->registerWorkerThread(thread_id);
+
+  BuiltinsLog() << my_counter << " RegisterWorker.2/2" << std::endl;
+
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
+
 BUILTIN(RunOnPaused) {
   int my_counter = ++counter;
   BuiltinsLog() << my_counter << " RunOnPaused.1/2";
