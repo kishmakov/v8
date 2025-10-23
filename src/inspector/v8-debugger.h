@@ -122,7 +122,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                              bool is_async);
 
   // Must be called from the worker thread running JS (so that m_isolate matches that thread).
-  void registerWorkerThread(const std::string& thread_id) const;
+  void registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> context_value) const;
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);

@@ -1341,13 +1341,12 @@ BUILTIN(RegisterWorker) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
   std::string thread_id = IdToString(args, isolate, 1);
-
+  Local<Value> context_value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
   BuiltinsLog() << " thread=" << thread_id << std::endl;
 
-  GetDebugger(v8_isolate)->registerWorkerThread(thread_id);
+  GetDebugger(v8_isolate)->registerWorkerThread(thread_id, context_value);
 
   BuiltinsLog() << my_counter << " RegisterWorker.2/2" << std::endl;
-
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
