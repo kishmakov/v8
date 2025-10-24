@@ -600,37 +600,37 @@ v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
     ).ToLocalChecked();
 }
 
-v8::Local<v8::Value> GetV8GlobalContext(v8::Isolate* isolate, v8::Local<v8::Context> context) {
-  auto stack_it = v8::debug::StackTraceIterator::Create(isolate);
-  if (stack_it->Done()) return v8::Undefined(isolate);
-
-  v8::Local<v8::String> v8_name = v8::String::NewFromUtf8Literal(isolate, "context");
-
-  auto scope_it = stack_it->GetScopeIterator();
-  for (; !scope_it->Done(); scope_it->Advance()) {
-    if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
-
-    v8::Local<v8::Object> scope_obj = scope_it->GetObject();
-    if (scope_obj.IsEmpty()) continue;
-
-    v8::Local<v8::Array> names;
-    if (!scope_obj->GetOwnPropertyNames(context).ToLocal(&names)) continue;
-
-    for (uint32_t i = 0; i < names->Length(); ++i) { // TODO: optimize away
-      v8::Local<v8::Value> name_candidate;
-      if (!names->Get(context, i).ToLocal(&name_candidate)) continue;
-      v8::String::Utf8Value utf8_key(isolate, name_candidate);
-      if (name_candidate->IsString() && name_candidate.As<v8::String>()->StringEquals(v8_name)) {
-        v8::Local<v8::Value> result;
-        if (scope_obj->Get(context, name_candidate).ToLocal(&result)) {
-          return result;
-        }
-      }
-    }
-  }
-
-  return v8::Undefined(isolate);
-}
+// v8::Local<v8::Value> GetV8GlobalContext(v8::Isolate* isolate, v8::Local<v8::Context> context) {
+//   auto stack_it = v8::debug::StackTraceIterator::Create(isolate);
+//   if (stack_it->Done()) return v8::Undefined(isolate);
+//
+//   v8::Local<v8::String> v8_name = v8::String::NewFromUtf8Literal(isolate, "context");
+//
+//   auto scope_it = stack_it->GetScopeIterator();
+//   for (; !scope_it->Done(); scope_it->Advance()) {
+//     if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
+//
+//     v8::Local<v8::Object> scope_obj = scope_it->GetObject();
+//     if (scope_obj.IsEmpty()) continue;
+//
+//     v8::Local<v8::Array> names;
+//     if (!scope_obj->GetOwnPropertyNames(context).ToLocal(&names)) continue;
+//
+//     for (uint32_t i = 0; i < names->Length(); ++i) { // TODO: optimize away
+//       v8::Local<v8::Value> name_candidate;
+//       if (!names->Get(context, i).ToLocal(&name_candidate)) continue;
+//       v8::String::Utf8Value utf8_key(isolate, name_candidate);
+//       if (name_candidate->IsString() && name_candidate.As<v8::String>()->StringEquals(v8_name)) {
+//         v8::Local<v8::Value> result;
+//         if (scope_obj->Get(context, name_candidate).ToLocal(&result)) {
+//           return result;
+//         }
+//       }
+//     }
+//   }
+//
+//   return v8::Undefined(isolate);
+// }
 
 v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context, v8::Local<v8::Value> context_value) {
   if (context_value->IsUndefined()) {
@@ -813,15 +813,19 @@ void V8Debugger::processTaskOnStack() const {
     is_async = g_task_is_async;
   }
 
-  const v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
+  // const v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
 
   v8::HandleScope handle_scope(m_isolate);
   const v8::TryCatch try_catch(m_isolate);
 
-  v8::Local<v8::Value> context_value = GetV8GlobalContext(m_isolate, v8_context);
-  const v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context, context_value);
+  // v8::Local<v8::Value> context_value = GetV8GlobalContext(m_isolate, v8_context);
+  // const v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context, context_value);
+
+  v8::Local<v8::Context> v8_context = g_worker_contexts[t_thread_id].Get(m_isolate).As<v8::Context>();;
+  v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_thread_id].Get(m_isolate).As<v8::Value>();;
 
   if (call_function_candidate->IsUndefined()) {
+    LogV8("processTaskOnStack.3/3", "func_undefined");
     g_main_cv.NotifyAll();
     return;
   }
