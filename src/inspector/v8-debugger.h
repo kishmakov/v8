@@ -75,7 +75,8 @@ struct V8ExecutionResult {
   double numValue = 0.0;
 };
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> value);
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
+                                    v8::Local<v8::Value> value);
 
 class V8Debugger : public v8::debug::DebugDelegate,
                    public v8::debug::AsyncEventDelegate {
@@ -108,21 +109,20 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOutOfFunction(int targetContextGroupId);
 
   void waitCall(const std::string& thread_id, const std::string& id);
-  void resumeCall(const std::string& thread_id);
+  void resumeCall(const std::string& thread_id) const;
   bool isThreadPaused(const std::string& thread_id) const;
   V8ExecutionResult runOnPaused(const std::string& thread_id,
-                   const std::string& target_id,
-                   const std::string& member_id,
-                   const std::string& args_json,
-                   bool is_async);
+                                std::string target_id, std::string member_id,
+                                std::string args_json, bool is_async) const;
   V8ExecutionResult runOnColdWorker(const std::string& thread_id,
-                             const std::string& target_id,
-                             const std::string& member_id,
-                             const std::string& args_json,
-                             bool is_async);
+                                    std::string target_id,
+                                    std::string member_id,
+                                    std::string args_json, bool is_async) const;
 
-  // Must be called from the worker thread running JS (so that m_isolate matches that thread).
-  void registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> context_value) const;
+  // Must be called from the worker thread running JS (so that m_isolate matches
+  // that thread).
+  void registerWorkerThread(const std::string& thread_id,
+                            v8::Local<v8::Value> context_value) const;
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);
