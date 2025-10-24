@@ -43,42 +43,28 @@ static const size_t kMaxAsyncTaskStacks = 8 * 1024;
 static const size_t kMaxExternalParents = 1 * 1024;
 static const int kNoBreakpointId = 0;
 
+thread_local std::string t_thread_id;
+
 v8::base::Mutex g_main_mutex;
 v8::base::ConditionVariable g_main_cv;
 
-V8ExecutionResult g_result;
-
-thread_local std::string t_thread_id;
-
 v8::base::Mutex g_state_mutex;
 
-v8::base::Mutex g_cv_mutex; // protect access to g_internal_wait_cv only
-
+v8::base::Mutex g_cv_mutex; // protect access to g_internal_wait_cv
 std::unordered_set<std::string> g_paused_thread_ids;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 std::unordered_map<std::string, shared_cv> g_internal_wait_cv;
 
+v8::base::Mutex g_worker_map_mutex; // protect access to g_worker_* maps
+std::unordered_map<std::string, v8::Isolate*> g_worker_thread_isolates;
 std::unordered_map<std::string, v8::Global<v8::Context>> g_worker_contexts;
 std::unordered_map<std::string, v8::Global<v8::Function>> g_worker_funcs;
 
-// Mapping from worker thread_id to its V8 isolate (for cold execution path)
-v8::base::Mutex g_worker_map_mutex;
-std::unordered_map<std::string, v8::Isolate*> g_worker_thread_isolates;
-
+V8ExecutionResult g_result;
 std::string g_task_target_id = "";
 std::string g_task_member_id = "";
 std::string g_task_args_json = "";
 bool g_task_is_async = false;
-
-// Global state for runOnColdWorker (running thread execution)
-v8::base::Mutex g_cold_worker_mutex;
-v8::base::ConditionVariable g_cold_worker_cv;
-std::string g_cold_worker_target_id = "";
-std::string g_cold_worker_member_id = "";
-std::string g_cold_worker_args_json = "";
-bool g_cold_worker_is_async = false;
-V8ExecutionResult g_cold_worker_result;
-bool g_cold_worker_completed = false;
 
 #pragma clang diagnostic pop
 
@@ -600,38 +586,6 @@ v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
     ).ToLocalChecked();
 }
 
-// v8::Local<v8::Value> GetV8GlobalContext(v8::Isolate* isolate, v8::Local<v8::Context> context) {
-//   auto stack_it = v8::debug::StackTraceIterator::Create(isolate);
-//   if (stack_it->Done()) return v8::Undefined(isolate);
-//
-//   v8::Local<v8::String> v8_name = v8::String::NewFromUtf8Literal(isolate, "context");
-//
-//   auto scope_it = stack_it->GetScopeIterator();
-//   for (; !scope_it->Done(); scope_it->Advance()) {
-//     if (scope_it->GetType() != v8::debug::ScopeIterator::ScopeTypeClosure) continue;
-//
-//     v8::Local<v8::Object> scope_obj = scope_it->GetObject();
-//     if (scope_obj.IsEmpty()) continue;
-//
-//     v8::Local<v8::Array> names;
-//     if (!scope_obj->GetOwnPropertyNames(context).ToLocal(&names)) continue;
-//
-//     for (uint32_t i = 0; i < names->Length(); ++i) { // TODO: optimize away
-//       v8::Local<v8::Value> name_candidate;
-//       if (!names->Get(context, i).ToLocal(&name_candidate)) continue;
-//       v8::String::Utf8Value utf8_key(isolate, name_candidate);
-//       if (name_candidate->IsString() && name_candidate.As<v8::String>()->StringEquals(v8_name)) {
-//         v8::Local<v8::Value> result;
-//         if (scope_obj->Get(context, name_candidate).ToLocal(&result)) {
-//           return result;
-//         }
-//       }
-//     }
-//   }
-//
-//   return v8::Undefined(isolate);
-// }
-
 v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context, v8::Local<v8::Value> context_value) {
   if (context_value->IsUndefined()) {
     LogV8("GetCallFunction", "failed to locate context 1");
@@ -654,38 +608,6 @@ v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Cont
   if (function_value->IsUndefined() || !function_value->IsFunction()) {
     LogV8("GetCallFunction", "context.callWorkerFunctionPaused is not a function");
     return v8::Undefined(v8_isolate);;
-  }
-
-  return function_value;
-}
-
-v8::Local<v8::Value> GetCallFunctionRunning(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context) {
-  v8::Local<v8::Object> global = v8_context->Global();
-
-  v8::Local<v8::String> context_key = v8::String::NewFromUtf8Literal(v8_isolate, "context");
-  v8::Local<v8::Value> context_value;
-
-  if (!global->Get(v8_context, context_key).ToLocal(&context_value)) {
-    LogV8("GetCallFunctionRunning", "failed to locate global.context");
-    return v8::Undefined(v8_isolate);
-  }
-
-  if (context_value->IsUndefined() || !context_value->IsObject()) {
-    LogV8("GetCallFunctionRunning", "global.context is not an object");
-    return v8::Undefined(v8_isolate);
-  }
-
-  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "callWorkerFunctionRunning");
-  v8::Local<v8::Value> function_value;
-
-  if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
-    LogV8("GetCallFunctionRunning", "failed to locate context.callWorkerFunctionRunning");
-    return v8::Undefined(v8_isolate);
-  }
-
-  if (function_value->IsUndefined() || !function_value->IsFunction()) {
-    LogV8("GetCallFunctionRunning", "context.callWorkerFunctionRunning is not a function");
-    return v8::Undefined(v8_isolate);
   }
 
   return function_value;
@@ -858,84 +780,6 @@ void V8Debugger::processTaskOnStack() const {
   }
 
   g_main_cv.NotifyAll();
-}
-
-void V8Debugger::executeColdWorkerTask(v8::Isolate* isolate) {
-  LogV8("executeColdWorkerTask.1/3", "interrupt_handler_called");
-
-  // Get task parameters
-  std::string target_id;
-  std::string member_id;
-  std::string args_json;
-  bool is_async = false;
-
-  {
-    v8::base::MutexGuard lk(&g_cold_worker_mutex);
-    target_id = g_cold_worker_target_id;
-    member_id = g_cold_worker_member_id;
-    args_json = g_cold_worker_args_json;
-    is_async = g_cold_worker_is_async;
-  }
-
-  if (target_id.empty()) {
-    LogV8("executeColdWorkerTask.3/3", "no_task_to_execute");
-    return;
-  }
-
-  // Execute the task in the worker's context
-  const v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
-
-  if (v8_context.IsEmpty()) {
-    LogV8("executeColdWorkerTask.3/3", "no_current_context");
-    v8::base::MutexGuard lk(&g_cold_worker_mutex);
-    g_cold_worker_result = V8ExecutionResult{};
-    g_cold_worker_completed = true;
-    g_cold_worker_cv.NotifyAll();
-    return;
-  }
-
-  v8::HandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(v8_context);
-  const v8::TryCatch try_catch(isolate);
-
-  const v8::Local<v8::Value> call_function_candidate = GetCallFunctionRunning(isolate, v8_context);
-
-  V8ExecutionResult local_result{};
-
-  if (call_function_candidate->IsUndefined()) {
-    LogV8("executeColdWorkerTask.3/3", "failed to locate callWorkerFunctionRunning");
-  } else {
-    const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
-
-    const v8::Local<v8::Value> v8_target = cppToV8(isolate, target_id);
-    const v8::Local<v8::Value> v8_member = cppToV8(isolate, member_id);
-    const v8::Local<v8::Value> v8_args = cppToV8(isolate, args_json);
-    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, is_async);
-
-    v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
-
-    v8::MaybeLocal<v8::Value> call_result =
-      call_function->Call(v8_context, v8_context->Global(), 4, argv);
-
-    if (try_catch.HasCaught() || call_result.IsEmpty()) {
-      v8::String::Utf8Value msg(isolate, try_catch.Exception());
-      LogV8("executeColdWorkerTask.3/3", "failed with exception", *msg ? *msg : "<unknown>");
-    } else {
-      LogV8("executeColdWorkerTask.2/3");
-      local_result = V8SerializeResult(isolate, call_result.ToLocalChecked());
-      LogV8("executeColdWorkerTask.3/3", "type", static_cast<int>(local_result.commTypeID));
-    }
-  }
-
-  // Store result and signal completion
-  {
-    LogV8("executeColdWorkerTask.4/3", "successfuly finished");
-    v8::base::MutexGuard lk(&g_cold_worker_mutex);
-    g_cold_worker_result = local_result;
-    g_cold_worker_completed = true;
-  }
-
-  g_cold_worker_cv.NotifyAll();
 }
 
 void V8Debugger::handleProgramBreak(
@@ -2068,11 +1912,10 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
   // Schedule interrupt on the worker's isolate to execute the task
   target_isolate->RequestInterrupt(
       [](v8::Isolate* isolate, void* /*data*/) {
-        LogV8("ColdColdCold", "1");
+        LogV8("runOnColdWorker", "RequestInterrupt");
         v8::debug::BreakRightNow(
             isolate,
             v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
-        LogV8("ColdColdCold", "2");
       },
       nullptr);
 
@@ -2104,24 +1947,28 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
 }
 
 void V8Debugger::registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> context_value) const {
-  if (thread_id.empty()) return;
-  v8::base::MutexGuard lk(&g_worker_map_mutex);
-  g_worker_thread_isolates[thread_id] = m_isolate;
+  t_thread_id = thread_id;
   LogV8("registerWorkerThread.1/2", "thread", thread_id);
 
+  v8::base::MutexGuard lk(&g_worker_map_mutex);
+
   v8::HandleScope handle_scope(m_isolate);
-  v8::Local<v8::Context> ctx = m_isolate->GetCurrentContext();
-  const v8::Local<v8::Value> func = GetCallFunction(m_isolate, ctx, context_value);
+  v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
+
+  g_worker_thread_isolates[thread_id] = m_isolate;
+
+  g_worker_contexts[thread_id].Reset(m_isolate, v8_context);
+
+  const v8::Local<v8::Value> func = GetCallFunction(m_isolate, v8_context, context_value);
 
   if (func.IsEmpty() || !func->IsFunction()) {
-    LogV8("registerWorkerThread.2/2", "no_function");
+    LogV8("registerWorkerThread.2/2", "[failed to locate function]");
     return;
   }
 
-  g_worker_contexts[thread_id].Reset(m_isolate, ctx);
   g_worker_funcs[thread_id].Reset(m_isolate, func.As<v8::Function>());
 
-  LogV8("registerWorkerThread.2/2", "success");
+  LogV8("registerWorkerThread.2/2", "[success]");
 }
 
 }  // namespace v8_inspector
