@@ -45,8 +45,8 @@ static const int kNoBreakpointId = 0;
 
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 
-std::mutex log_mutex;
-v8::base::ConditionVariable g_main_cv;
+std::mutex log_mutex; // should be global, because of usage in template function
+v8::base::ConditionVariable <g_main_cv>;
 
 v8::base::Mutex g_paused_mutex;
 std::unordered_set<std::string> g_paused_thread_ids;
@@ -130,12 +130,11 @@ class PokeTask : public v8::Task {
  public:
   explicit PokeTask(v8::Isolate* isolate) : isolate_(isolate) {}
   void Run() override {
-    LogV8("Cold:PokeTask:Run 1");
     v8::Locker locker(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
     // Touch a debug API that enters V8 VM without requiring a context.
-    LogV8("Cold:PokeTask:Run 2");
+    LogV8("Cold:PokeTask:Run");
     auto it = v8::debug::StackTraceIterator::Create(isolate_);
     (void)it;
   }
@@ -759,7 +758,7 @@ void V8Debugger::processTaskOnStack() const {
 
   if (call_function_candidate->IsUndefined()) {
     LogV8("processTaskOnStack.3/3", "func_undefined");
-    g_main_cv.NotifyAll();
+    GetCV(t_worker_thread_id)->NotifyAll();
     return;
   }
 
@@ -790,7 +789,7 @@ void V8Debugger::processTaskOnStack() const {
     g_task_result = local_result;
   }
 
-  g_main_cv.NotifyAll();
+  GetCV(t_worker_thread_id)->NotifyAll();
 }
 
 void V8Debugger::handleProgramBreak(
@@ -817,27 +816,38 @@ void V8Debugger::handleProgramBreak(
   // We intentionally do not emit Debugger paused/resumed events.
   // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
-    LogV8("handleProgramBreak.1/2");
+    LogV8("handleProgramBreak.1/3");
+
+    bool is_paused = false;
+    {
+      v8::base::MutexGuard guard(&g_paused_mutex);
+      is_paused = g_paused_thread_ids.count(t_worker_thread_id) > 0;
+    }
+
     v8::Context::Scope scope(pausedContext);
 
-    // shared_cv cv = GetCV(t_worker_thread_id);
+    if (!is_paused) { // run on cold
+        LogV8("handleProgramBreak.2/3", "[run on cold]");
+        processTaskOnStack();
+        LogV8("handleProgramBreak.3/3", "[success]");
+        return;
+    }
+
+    auto cv = GetCV(t_worker_thread_id);
 
     for (;;) {
-      LogV8("handleProgramBreak.1a/2");
       {
         v8::base::MutexGuard guard(&g_paused_mutex);
         if (!g_paused_thread_ids.contains(t_worker_thread_id)) break;
-        // cv->Wait(&g_paused_mutex);
+        cv->Wait(&g_paused_mutex);
       }
 
-      LogV8("handleProgramBreak.1b/2");
-
-      // outside of g_state_mutex to avoid re-entrant locking on isThreadPaused
+      LogV8("handleProgramBreak.2/3", "[run on warm]");
       processTaskOnStack();
     }
 
     m_targetContextGroupId = 0;
-    LogV8("handleProgramBreak.2/2", "[success]");
+    LogV8("handleProgramBreak.3/3", "[success]");
     return;
   }
 
@@ -1846,15 +1856,20 @@ bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
   return result;
 }
 
-void WaitTaskProcession() {
+void WaitTaskProcession(const std::string& thread_id) {
+  auto cv = GetCV(thread_id);
+
+  // make sure that suspended thread is notified
+  cv->NotifyAll();
+
   v8::base::MutexGuard guard(&g_task_mutex);
   while (!g_task_target_id.empty()) {
     // Release the V8 isolate lock while waiting, if held.
     // if (v8::Locker::IsLocked(m_isolate)) {
     //   v8::Unlocker unlocker(m_isolate);
-    //   g_main_cv.Wait(&g_task_mutex);
+    //   cv->Wait(&g_task_mutex);
     // } else {
-      g_main_cv.Wait(&g_task_mutex);
+      cv->Wait(&g_task_mutex);
     // }
   }
 }
@@ -1874,10 +1889,7 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
     g_task_args_json, args_json,
     g_task_is_async, is_async);
 
-  // wake up the paused thread to process the task
-  GetCV(thread_id)->NotifyAll();
-
-  WaitTaskProcession();
+  WaitTaskProcession(thread_id);
 
   LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
   return g_task_result;
@@ -1911,11 +1923,6 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
     g_task_args_json, args_json,
     g_task_is_async, is_async);
 
-  {
-    v8::base::MutexGuard lk(&g_paused_mutex);
-    g_paused_thread_ids.insert(thread_id);
-  }
-
   LogV8("runOnColdWorker.2/6", "[job created]");
 
   v8::debug::SetBlackBoxPausesPolicy(target_isolate, true);
@@ -1940,17 +1947,10 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
 
   LogV8("runOnColdWorker.4/6", "[interruption scheduled]");
 
-  GetCV(thread_id)->NotifyAll();
-
-  WaitTaskProcession();
+  WaitTaskProcession(thread_id);
 
   LogV8("runOnColdWorker.5/6", "type",
         static_cast<int>(g_task_result.commTypeID));
-
-  {
-    v8::base::MutexGuard lk(&g_paused_mutex);
-    g_paused_thread_ids.erase(thread_id);
-  }
 
   v8::debug::SetBlackBoxPausesPolicy(target_isolate, false);
 
