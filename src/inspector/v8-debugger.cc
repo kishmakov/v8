@@ -46,7 +46,7 @@ static const int kNoBreakpointId = 0;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 
 std::mutex log_mutex; // should be global, because of usage in template function
-v8::base::ConditionVariable <g_main_cv>;
+v8::base::ConditionVariable g_main_cv;
 
 v8::base::Mutex g_paused_mutex;
 std::unordered_set<std::string> g_paused_thread_ids;
@@ -111,6 +111,11 @@ void LogV8(const char* event, Args&&... args) {
   std::lock_guard<std::mutex> lk(log_mutex);
 
   std::ostream& log = V8CallsLog();
+  std::time_t now = std::time(nullptr);
+  char timebuf[64] = {0};
+  if (std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", std::localtime(&now))) {
+    log << "[" << timebuf << "] ";
+  }
   log << event;
   PairPrinter{log}(std::forward<Args>(args)...);
   log << std::endl << std::flush;
