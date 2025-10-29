@@ -4,6 +4,10 @@
 
 #include "src/inspector/v8-debugger.h"
 
+// #include <src/base/platform/platform.h>
+// #include <sys/syscall.h>
+// #include <unistd.h>
+
 #include <algorithm>
 #include <fstream>
 #include <memory>
@@ -138,11 +142,30 @@ class PokeTask : public v8::Task {
     v8::Locker locker(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
-    // Touch a debug API that enters V8 VM without requiring a context.
-    LogV8("Cold:PokeTask:Run");
-    auto it = v8::debug::StackTraceIterator::Create(isolate_);
-    (void)it;
+
+    v8::Local<v8::Context> context = isolate_->GetEnteredOrMicrotaskContext();
+    if (context.IsEmpty()) return;
+
+    LogV8("PokeTask.Run");
+    v8::Context::Scope context_scope(context);
+    // Touch V8 so the task hits a safepoint.
+    v8::TryCatch try_catch(isolate_);
+    v8::Local<v8::String> source;
+    if (v8::String::NewFromUtf8(
+            isolate_,
+            "(function(){let s=0;for(let i=1;i<=10;i++)s+=i;return s;})()",
+            v8::NewStringType::kNormal)
+            .ToLocal(&source)) {
+      v8::Local<v8::Script> script;
+      if (v8::Script::Compile(context, source).ToLocal(&script)) {
+        v8::Local<v8::Value> result;
+        if (script->Run(context).ToLocal(&result)) {
+          (void)result;  // computed sum
+        }
+      }
+    }
   }
+
  private:
   v8::Isolate* isolate_;
 };
@@ -1932,15 +1955,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
 
   v8::debug::SetBlackBoxPausesPolicy(target_isolate, true);
 
-  // post a foreground poke task to force the worker isolate thread to enter V8
-  // and be able to paused
-  auto* platform = v8::debug::GetCurrentPlatform();
-  auto runner = platform->GetForegroundTaskRunner(target_isolate);
-  runner->PostTask(std::make_unique<PokeTask>(target_isolate));
-
-  LogV8("runOnColdWorker.3/6", "[phony task posted]");
-
-  // Schedule interrupt on the worker's isolate to execute the task
+  // schedule interrupt on the worker's isolate to execute the task
   target_isolate->RequestInterrupt(
       [](v8::Isolate* isolate, void* /*data*/) {
         LogV8("runOnColdWorker", "[interruption requested]");
@@ -1950,7 +1965,14 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
       },
       nullptr);
 
-  LogV8("runOnColdWorker.4/6", "[interruption scheduled]");
+  LogV8("runOnColdWorker.3/6", "[debugger enabled]");
+
+  // force post cold worker thread to run a foreground poke task
+  auto* platform = v8::debug::GetCurrentPlatform();
+  auto runner = platform->GetForegroundTaskRunner(target_isolate);
+  runner->PostTask(std::make_unique<PokeTask>(target_isolate));
+
+  LogV8("runOnColdWorker.4/6", "[phony task posted]");
 
   WaitTaskProcession(thread_id);
 
