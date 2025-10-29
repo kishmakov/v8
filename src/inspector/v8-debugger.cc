@@ -4,10 +4,6 @@
 
 #include "src/inspector/v8-debugger.h"
 
-// #include <src/base/platform/platform.h>
-// #include <sys/syscall.h>
-// #include <unistd.h>
-
 #include <algorithm>
 #include <fstream>
 #include <memory>
@@ -120,7 +116,7 @@ void LogV8(const char* event, Args&&... args) {
   if (std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", std::localtime(&now))) {
     log << "[" << timebuf << "] ";
   }
-  log << event;
+  log << t_worker_thread_id << " " << event;
   PairPrinter{log}(std::forward<Args>(args)...);
   log << std::endl << std::flush;
 }
@@ -621,33 +617,6 @@ v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
   return v8::String::NewFromUtf8(
       isolate, value.c_str(), v8::NewStringType::kNormal, static_cast<int>(value.size())
     ).ToLocalChecked();
-}
-
-v8::Local<v8::Value> GetCallFunction(v8::Isolate* v8_isolate, v8::Local<v8::Context> v8_context, v8::Local<v8::Value> context_value) {
-  if (context_value->IsUndefined()) {
-    LogV8("GetCallFunction", "failed to locate context 1");
-    return v8::Undefined(v8_isolate);
-  }
-
-  if (!context_value->IsObject()) {
-    LogV8("GetCallFunction", "failed to locate context 2");
-    return v8::Undefined(v8_isolate);
-  }
-
-  v8::Local<v8::String> function_key = v8::String::NewFromUtf8Literal(v8_isolate, "callWorkerFunctionPaused");
-  v8::Local<v8::Value> function_value;
-
-  if (!context_value.As<v8::Object>()->Get(v8_context, function_key).ToLocal(&function_value)) {
-    LogV8("GetCallFunction", "failed to locate context.callWorkerFunctionPaused");
-    return v8::Undefined(v8_isolate);;
-  }
-
-  if (function_value->IsUndefined() || !function_value->IsFunction()) {
-    LogV8("GetCallFunction", "context.callWorkerFunctionPaused is not a function");
-    return v8::Undefined(v8_isolate);;
-  }
-
-  return function_value;
 }
 
 std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
@@ -1824,7 +1793,7 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-void V8Debugger::waitCall(const std::string& /*thread_id*/, const std::string& id) {
+void V8Debugger::waitCall(const std::string& id) {
   if (!enabled()) return;
 
   LogV8("waitCall.1/3", "id", id, "group id", m_targetContextGroupId);
@@ -1853,19 +1822,19 @@ void V8Debugger::waitCall(const std::string& /*thread_id*/, const std::string& i
   LogV8("waitCall.3/3", "[break requested]");
 }
 
-void V8Debugger::resumeCall(const std::string& thread_id) const {
+void V8Debugger::resumeCall(const std::string& for_thread) const {
   if (!enabled()) return;
 
-  LogV8("resumeCall.1/2", "thread_id", thread_id);
+  LogV8("resumeCall.1/2", "for_thread", for_thread);
 
   {
     v8::base::MutexGuard guard(&g_paused_mutex);
-    g_paused_thread_ids.erase(thread_id);
+    g_paused_thread_ids.erase(for_thread);
   }
 
   v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
 
-  GetCV(thread_id)->NotifyAll();
+  GetCV(for_thread)->NotifyAll();
 
   LogV8("resumeCall.2/2", "[signaled]");
 }
@@ -1986,19 +1955,15 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
   return g_task_result;
 }
 
-void V8Debugger::registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> context_value) const {
+void V8Debugger::registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> func) const {
   LogV8("registerWorkerThread.1/2", "thread", thread_id);
 
   v8::base::MutexGuard lk(&g_worker_map_mutex);
   t_worker_thread_id = thread_id;
   v8::HandleScope handle_scope(m_isolate);
-  v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
 
   g_worker_thread_isolates[thread_id] = m_isolate;
-
-  g_worker_contexts[thread_id].Reset(m_isolate, v8_context);
-
-  const v8::Local<v8::Value> func = GetCallFunction(m_isolate, v8_context, context_value);
+  g_worker_contexts[thread_id].Reset(m_isolate, m_isolate->GetCurrentContext());
 
   if (func.IsEmpty() || !func->IsFunction()) {
     LogV8("registerWorkerThread.2/2", "[failed to locate function]");

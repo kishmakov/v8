@@ -1238,7 +1238,7 @@ BUILTIN(WaitCall) {
 
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog() << my_counter << " WaitCall.2/3" << std::endl;
-  GetDebugger(v8_isolate)->waitCall(thread_id, id);
+  GetDebugger(v8_isolate)->waitCall(id);
 
   BuiltinsLog() << my_counter << " WaitCall.3/3";
   Handle<Object> result = UnshelveValue(isolate, id);
@@ -1341,10 +1341,10 @@ BUILTIN(RegisterWorker) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
   std::string thread_id = IdToString(args, isolate, 1);
-  Local<Value> context_value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  Local<Value> func_value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
   BuiltinsLog() << " thread=" << thread_id << std::endl;
 
-  GetDebugger(v8_isolate)->registerWorkerThread(thread_id, context_value);
+  GetDebugger(v8_isolate)->registerWorkerThread(thread_id, func_value);
 
   BuiltinsLog() << my_counter << " RegisterWorker.2/2" << std::endl;
   return ReadOnlyRoots(isolate).undefined_value();

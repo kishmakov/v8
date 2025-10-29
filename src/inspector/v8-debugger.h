@@ -108,8 +108,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  void waitCall(const std::string& thread_id, const std::string& id);
-  void resumeCall(const std::string& thread_id) const;
+  void waitCall(const std::string& id);
+  void resumeCall(const std::string& for_thread) const;
   bool isThreadPaused(const std::string& thread_id) const;
   V8ExecutionResult runOnPaused(const std::string& thread_id,
                                 std::string target_id, std::string member_id,
@@ -122,7 +122,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
   // Must be called from the worker thread running JS (so that m_isolate matches
   // that thread).
   void registerWorkerThread(const std::string& thread_id,
-                            v8::Local<v8::Value> context_value) const;
+                            v8::Local<v8::Value> func) const;
 
   void terminateExecution(v8::Local<v8::Context> context,
                           std::unique_ptr<TerminateExecutionCallback> callback);
