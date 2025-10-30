@@ -1070,27 +1070,11 @@ std::ostream& BuiltinsLog() {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 
-std::mutex mtx;
-
-typedef std::shared_ptr<std::condition_variable> shared_cv;
-std::unordered_map<std::string, shared_cv> cvs;
 std::unordered_map<std::string, v8_inspector::V8ExecutionResult> idToResult;
 
 int counter = 0;
 
 #pragma clang diagnostic pop
-
-shared_cv GetCV(const std::string& id) {
-  std::string extensionId = id.substr(0, id.find(':'));
-
-  std::lock_guard<std::mutex> lock(mtx);
-
-  if (cvs.find(extensionId) == cvs.end()) {
-    cvs.emplace(extensionId, std::make_shared<std::condition_variable>());
-  }
-
-  return cvs[extensionId];
-}
 
 inline v8_inspector::V8Debugger* GetDebugger(v8::Isolate* isolate) {
   auto* inspector = debug::GetInspector(isolate); // TODO: what if null?
@@ -1276,22 +1260,27 @@ BUILTIN(ResumeCall) {
 
 BUILTIN(WaitType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitType.1/2";
+  BuiltinsLog() << my_counter << " WaitType.1/3";
 
   HandleScope scope(isolate);
-  DCHECK(isolate->IsOnCentralStack());
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
 
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
+  if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
-  shared_cv cv = GetCV(thread_id);
-  std::unique_lock<std::mutex> lock(mtx);
-  cv->wait(lock, [id] { return idToResult.contains(id); });
-  DCHECK(isolate->IsOnCentralStack());
+  if (!GetDebugger(v8_isolate)->enabled()) {
+    GetDebugger(v8_isolate)->enable();
+  }
 
-  BuiltinsLog() << my_counter << " WaitType.2/2";
+  // Pause using the debugger (same path as WaitCall): triggers BreakRightNow
+  // with kInternalWait and updates g_paused_thread_ids for this worker.
+  BuiltinsLog() << my_counter << " WaitType.2/3" << std::endl;
+  GetDebugger(v8_isolate)->waitCall(id);
+
+  BuiltinsLog() << my_counter << " WaitType.3/3";
   Handle<Object> result = UnshelveValue(isolate, id);
   BuiltinsLog() << std::endl;
   return *result;
@@ -1299,7 +1288,7 @@ BUILTIN(WaitType) {
 
 BUILTIN(ResumeType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " ResumeType.1/2";
+  BuiltinsLog() << my_counter << " ResumeType.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1310,14 +1299,14 @@ BUILTIN(ResumeType) {
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
 
-  shared_cv cv = GetCV(thread_id);
-  std::lock_guard<std::mutex> lock(mtx);
+  bool value_saved = ShelveValue(std::move(result_ser));
+  BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
-  BuiltinsLog() << my_counter << " ResumeType.2/2";
-  ShelveValue(std::move(result_ser));
-  BuiltinsLog() << std::endl;
+  // Resume the paused thread via debugger (same path as ResumeCall).
+  BuiltinsLog() << my_counter << " ResumeType.2/3" << std::endl;
+  GetDebugger(v8_isolate)->resumeCall(thread_id);
+  BuiltinsLog() << my_counter << " ResumeType.3/3" << std::endl;
 
-  cv->notify_one();
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
