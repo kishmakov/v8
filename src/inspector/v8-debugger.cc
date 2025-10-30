@@ -795,7 +795,7 @@ void V8Debugger::handleProgramBreak(
     v8::debug::BreakReasons breakReasons,
     v8::debug::ExceptionType exceptionType, bool isUncaught) {
   // Don't allow nested breaks.
-  LogV8("handleProgramBreak.0/2",
+  LogV8("handleProgramBreak.0/3",
     "break_reasons", breakReasons.ToIntegral(),
     "is_paused", isPaused(),
     "m_targetContextGroupId", m_targetContextGroupId,
