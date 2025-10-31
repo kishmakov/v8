@@ -1267,8 +1267,13 @@ BUILTIN(WaitType) {
 
   std::string thread_id = IdToString(args, isolate, 1);
   std::string id = IdToString(args, isolate, 2);
+  std::string call_id = IdToString(args, isolate, 3);
 
-  BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
+  BuiltinsLog()
+    << " callId=" << call_id
+    << " thread=" << thread_id
+    << " id=" << id
+    << std::endl;
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1294,10 +1299,14 @@ BUILTIN(ResumeType) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 2));
+  std::string call_id = IdToString(args, isolate, 2);
+  Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 3));
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
+  BuiltinsLog()
+    << " callId=" << call_id
+    << " thread=" << thread_id
+    << " id=" << result_ser.commResultID << std::endl;
 
   bool value_saved = ShelveValue(std::move(result_ser));
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
