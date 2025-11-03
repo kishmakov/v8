@@ -1047,23 +1047,57 @@ size_t fib(int n) { /* fib(41) < 10 */
   return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
 }
 
-std::ostream& BuiltinsLog() {
-  static std::ostream* active = []() -> std::ostream* {
+struct LockableStream : std::ostream {
+  explicit LockableStream(std::ofstream&& fs)
+        : std::ostream(nullptr), owned_(std::move(fs)) {
+    this->init(owned_.rdbuf());
+  }
+  explicit LockableStream(std::unique_ptr<std::streambuf> buf)
+      : std::ostream(nullptr), nullbuf_(std::move(buf)) {
+    this->init(nullbuf_.get());
+  }
+
+  using std::ostream::ostream;
+
+  LockableStream& lock(int count) {
+    mutex_.lock();
+    static_cast<std::ostream&>(*this) << "[" << count << "]";
+    return *this;
+  }
+
+  template <typename T>
+  LockableStream& operator<<(const T& value) {
+    static_cast<std::ostream&>(*this) << value;
+    return *this;
+  }
+
+  LockableStream& operator<<(std::ostream& (*manip)(std::ostream&)) {
+    this->flush();
+    manip(static_cast<std::ostream&>(*this));
+    mutex_.unlock();
+    return *this;
+  }
+
+private:
+  std::ofstream owned_;
+  std::unique_ptr<std::streambuf> nullbuf_;
+  std::mutex mutex_;
+};
+
+LockableStream& BuiltinsLog() {
+  static LockableStream* active = []() -> LockableStream* {
     const char* dir = std::getenv("ISOLATION_LOG_DIR");
     if (dir && dir[0] != '\0') {
       std::filesystem::path path = std::filesystem::path(dir) / "log_builtins.txt";
-      auto* fs = new std::ofstream(path, std::ios::app);
-      if (fs->is_open()) {
-        *fs << "pid=" << getpid() << '\n';
-        return fs; // real log
+      std::ofstream fs(path, std::ios::app);
+      if (fs.is_open()) {
+        fs << "pid=" << getpid() << '\n';
+        return new LockableStream(std::move(fs)); // owns the stream
       }
     }
-
-    struct NullBuf : public std::streambuf { int overflow(int c) override { return c; } };
-    auto* null_buf = new NullBuf();
-    return new std::ostream(null_buf); // fallback dummy log
+    struct NullBuf : std::streambuf { int overflow(int c) override { return c; } };
+    return new LockableStream(std::make_unique<NullBuf>()); // dummy sink
   }();
-
   return *active;
 }
 
@@ -1205,7 +1239,7 @@ Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
 
 BUILTIN(WaitCall) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitCall.1/3";
+  BuiltinsLog().lock(my_counter) << " WaitCall.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1214,6 +1248,7 @@ BUILTIN(WaitCall) {
   std::string id = IdToString(args, isolate, 2);
 
   BuiltinsLog() << " thread=" << thread_id << " id=" << id << std::endl;
+
   if (id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1221,10 +1256,10 @@ BUILTIN(WaitCall) {
   }
 
   // Initiate internal silent wait pause via V8Debugger.
-  BuiltinsLog() << my_counter << " WaitCall.2/3" << std::endl;
+  BuiltinsLog().lock(my_counter) << " WaitCall.2/3" << std::endl;
   GetDebugger(v8_isolate)->waitCall(id);
 
-  BuiltinsLog() << my_counter << " WaitCall.3/3";
+  BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
   Handle<Object> result = UnshelveValue(isolate, id);
   BuiltinsLog() << std::endl;
   return *result;
@@ -1232,7 +1267,7 @@ BUILTIN(WaitCall) {
 
 BUILTIN(ResumeCall) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " ResumeCall.1/4";
+  BuiltinsLog().lock(my_counter) << " ResumeCall.1/4";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1246,21 +1281,21 @@ BUILTIN(ResumeCall) {
   bool value_saved = ShelveValue(std::move(result_ser));
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
-  BuiltinsLog() << my_counter << " ResumeCall.2/4" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeCall.2/4" << std::endl;
   GetDebugger(v8_isolate)->resumeCall(thread_id);
-  BuiltinsLog() << my_counter << " ResumeCall.3/4" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeCall.3/4" << std::endl;
 
   auto result = value_saved
                     ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
                     : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
 
-  BuiltinsLog() << my_counter << " ResumeCall.4/4" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeCall.4/4" << std::endl;
   return result;
 }
 
 BUILTIN(WaitType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " WaitType.1/3";
+  BuiltinsLog().lock(my_counter) << " WaitType.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1282,10 +1317,10 @@ BUILTIN(WaitType) {
 
   // Pause using the debugger (same path as WaitCall): triggers BreakRightNow
   // with kInternalWait and updates g_paused_thread_ids for this worker.
-  BuiltinsLog() << my_counter << " WaitType.2/3" << std::endl;
+  BuiltinsLog().lock(my_counter) << " WaitType.2/3" << std::endl;
   GetDebugger(v8_isolate)->waitCall(id);
 
-  BuiltinsLog() << my_counter << " WaitType.3/3";
+  BuiltinsLog().lock(my_counter) << " WaitType.3/3";
   Handle<Object> result = UnshelveValue(isolate, id);
   BuiltinsLog() << std::endl;
   return *result;
@@ -1293,7 +1328,7 @@ BUILTIN(WaitType) {
 
 BUILTIN(ResumeType) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " ResumeType.1/3";
+  BuiltinsLog().lock(my_counter) << " ResumeType.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1312,15 +1347,15 @@ BUILTIN(ResumeType) {
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   // Resume the paused thread via debugger (same path as ResumeCall).
-  BuiltinsLog() << my_counter << " ResumeType.2/3" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeType.2/3" << std::endl;
   GetDebugger(v8_isolate)->resumeCall(thread_id);
-  BuiltinsLog() << my_counter << " ResumeType.3/3" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeType.3/3" << std::endl;
 
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
 BUILTIN(IsThreadPaused) {
-  BuiltinsLog() << ++counter << " IsThreadPaused.1/1";
+  BuiltinsLog().lock(++counter) << " IsThreadPaused.1/1";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1334,7 +1369,7 @@ BUILTIN(IsThreadPaused) {
 
 BUILTIN(RegisterWorker) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " RegisterWorker.1/2";
+  BuiltinsLog().lock(my_counter) << " RegisterWorker.1/2";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1344,14 +1379,14 @@ BUILTIN(RegisterWorker) {
 
   GetDebugger(v8_isolate)->registerWorkerThread(thread_id, func_value);
 
-  BuiltinsLog() << my_counter << " RegisterWorker.2/2" << std::endl;
+  BuiltinsLog().lock(my_counter) << " RegisterWorker.2/2" << std::endl;
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
 
 BUILTIN(RunOnPaused) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " RunOnPaused.1/2";
+  BuiltinsLog().lock(my_counter) << " RunOnPaused.1/2";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1372,7 +1407,7 @@ BUILTIN(RunOnPaused) {
     thread_id, target_id, member_id, str_args, is_async
   );
 
-  BuiltinsLog() << my_counter << " RunOnPaused.2/2"
+  BuiltinsLog().lock(my_counter) << " RunOnPaused.2/2"
     << " type=" << static_cast<int>(result.commTypeID)
     << " json=" << result.commJSON
     << std::endl;
@@ -1382,7 +1417,7 @@ BUILTIN(RunOnPaused) {
 
 BUILTIN(RunOnCold) {
   int my_counter = ++counter;
-  BuiltinsLog() << my_counter << " RunOnCold.1/2";
+  BuiltinsLog().lock(my_counter) << " RunOnCold.1/2";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1403,7 +1438,7 @@ BUILTIN(RunOnCold) {
     thread_id, target_id, member_id, str_args, is_async
   );
 
-  BuiltinsLog() << my_counter << " RunOnCold.2/2"
+  BuiltinsLog().lock(my_counter) << " RunOnCold.2/2"
     << " type=" << static_cast<int>(result.commTypeID)
     << " json=" << result.commJSON
     << std::endl;

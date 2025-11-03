@@ -796,7 +796,7 @@ void V8Debugger::handleProgramBreak(
     v8::debug::ExceptionType exceptionType, bool isUncaught) {
   // Don't allow nested breaks.
   LogV8("handleProgramBreak.0/3",
-    "break_reasons", breakReasons.ToIntegral(),
+    "break_internal", breakReasons.contains(v8::debug::BreakReason::kInternalWait),
     "is_paused", isPaused(),
     "m_targetContextGroupId", m_targetContextGroupId,
     "contextGroupId", m_inspector->contextGroupId(pausedContext)
@@ -825,7 +825,14 @@ void V8Debugger::handleProgramBreak(
 
     if (!is_paused) { // run on cold
         LogV8("handleProgramBreak.2/3", "[run on cold]");
+        // {
+        //   v8::base::MutexGuard task_guard(&g_task_mutex);
+        //   while (g_task_target_id.empty()) {
+        //     GetCV(t_worker_thread_id)->Wait(&g_task_mutex);
+        //   }
+        // }
         processTaskOnStack();
+        // v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
         LogV8("handleProgramBreak.3/3", "[success]");
         return;
     }
@@ -1796,7 +1803,7 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
 void V8Debugger::waitCall(const std::string& id) {
   if (!enabled()) return;
 
-  LogV8("waitCall.1/3", "id", id, "group id", m_targetContextGroupId);
+  LogV8("waitCall.1/4", "id", id, "group id", m_targetContextGroupId);
 
   v8::debug::SetBlackBoxPausesPolicy(m_isolate, true);
 
@@ -1804,9 +1811,9 @@ void V8Debugger::waitCall(const std::string& id) {
     v8::base::MutexGuard guard(&g_paused_mutex);
     g_paused_thread_ids.insert(t_worker_thread_id);
     (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
-    LogV8("waitCall.2/3", "[preparing]");
+    LogV8("waitCall.2/4", "[preparing]");
   } else {
-    LogV8("waitCall.3/3", "[skip already paused]");
+    LogV8("waitCall.4/4", "[skip already paused]");
     return;  // ignore nested or concurrent
   }
 
@@ -1815,11 +1822,12 @@ void V8Debugger::waitCall(const std::string& id) {
 
   DCHECK(m_targetContextGroupId);
 
+  LogV8("waitCall.3/4", "[before break requested]");
   v8::debug::BreakRightNow(
       m_isolate,
       v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
 
-  LogV8("waitCall.3/3", "[break requested]");
+  LogV8("waitCall.4/4", "[after break requested]");
 }
 
 void V8Debugger::resumeCall(const std::string& for_thread) const {
@@ -1827,12 +1835,23 @@ void V8Debugger::resumeCall(const std::string& for_thread) const {
 
   LogV8("resumeCall.1/2", "for_thread", for_thread);
 
+  v8::Isolate* target_isolate = nullptr;
+  {
+    v8::base::MutexGuard lk(&g_worker_map_mutex);
+    auto it = g_worker_thread_isolates.find(for_thread);
+    if (it != g_worker_thread_isolates.end()) target_isolate = it->second;
+  }
+
+  if (!target_isolate) {
+    LogV8("resumeCall.2/2", "[failed to find isolate]");
+  }
+
   {
     v8::base::MutexGuard guard(&g_paused_mutex);
     g_paused_thread_ids.erase(for_thread);
   }
 
-  v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
+  v8::debug::SetBlackBoxPausesPolicy(target_isolate, false);
 
   GetCV(for_thread)->NotifyAll();
 
@@ -1861,13 +1880,7 @@ void WaitTaskProcession(const std::string& thread_id) {
 
   v8::base::MutexGuard guard(&g_task_mutex);
   while (!g_task_target_id.empty()) {
-    // Release the V8 isolate lock while waiting, if held.
-    // if (v8::Locker::IsLocked(m_isolate)) {
-    //   v8::Unlocker unlocker(m_isolate);
-    //   cv->Wait(&g_task_mutex);
-    // } else {
-      cv->Wait(&g_task_mutex);
-    // }
+    cv->Wait(&g_task_mutex);
   }
 }
 
