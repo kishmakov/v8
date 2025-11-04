@@ -108,8 +108,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  void waitCall(const std::string& id);
-  void resumeCall(const std::string& for_thread) const;
+  void pauseWorker(const std::string& id, const std::string& type, const std::string& target_id);
+  void resumeWorker(const std::string& for_thread, const std::string& type, const std::string& target_id) const;
   bool isThreadPaused(const std::string& thread_id) const;
   V8ExecutionResult runOnPaused(const std::string& thread_id,
                                 std::string target_id, std::string member_id,

@@ -1800,10 +1800,10 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-void V8Debugger::waitCall(const std::string& id) {
+void V8Debugger::pauseWorker(const std::string& id, const std::string& type, const std::string& target_id) {
   if (!enabled()) return;
 
-  LogV8("waitCall.1/4", "id", id, "group id", m_targetContextGroupId);
+  LogV8("pauseWorker.1/4", "id", id, "type", type, "target", target_id);
 
   v8::debug::SetBlackBoxPausesPolicy(m_isolate, true);
 
@@ -1811,9 +1811,9 @@ void V8Debugger::waitCall(const std::string& id) {
     v8::base::MutexGuard guard(&g_paused_mutex);
     g_paused_thread_ids.insert(t_worker_thread_id);
     (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
-    LogV8("waitCall.2/4", "[preparing]");
+    LogV8("pauseWorker.2/4", "[preparing]");
   } else {
-    LogV8("waitCall.4/4", "[skip already paused]");
+    LogV8("pauseWorker.4/4", "[skip already paused]");
     return;  // ignore nested or concurrent
   }
 
@@ -1822,18 +1822,18 @@ void V8Debugger::waitCall(const std::string& id) {
 
   DCHECK(m_targetContextGroupId);
 
-  LogV8("waitCall.3/4", "[before break requested]");
+  LogV8("pauseWorker.3/4", "[before break requested]");
   v8::debug::BreakRightNow(
       m_isolate,
       v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
 
-  LogV8("waitCall.4/4", "[after break requested]");
+  LogV8("pauseWorker.4/4", "[after break requested]");
 }
 
-void V8Debugger::resumeCall(const std::string& for_thread) const {
+void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& type, const std::string& target_id) const {
   if (!enabled()) return;
 
-  LogV8("resumeCall.1/2", "for_thread", for_thread);
+  LogV8("resumeWorker.1/2", "for_thread", for_thread, "type", type, "target", target_id);
 
   v8::Isolate* target_isolate = nullptr;
   {
@@ -1843,7 +1843,7 @@ void V8Debugger::resumeCall(const std::string& for_thread) const {
   }
 
   if (!target_isolate) {
-    LogV8("resumeCall.2/2", "[failed to find isolate]");
+    LogV8("resumeWorker.2/2", "[failed to find isolate]");
   }
 
   {
@@ -1855,7 +1855,7 @@ void V8Debugger::resumeCall(const std::string& for_thread) const {
 
   GetCV(for_thread)->NotifyAll();
 
-  LogV8("resumeCall.2/2", "[signaled]");
+  LogV8("resumeWorker.2/2", "[signaled]");
 }
 
 bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
