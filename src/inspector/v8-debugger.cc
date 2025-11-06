@@ -840,7 +840,8 @@ void V8Debugger::handleProgramBreak(
         //   }
         // }
         processTaskOnStack();
-        // v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
+        // Reset policy after task completes, from within worker thread
+        v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
         LogV8("handleProgramBreak.3/3", "[success]");
         return;
     }
@@ -1873,8 +1874,6 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
     if (g_paused_thread_ids.erase(for_thread) == 0) g_resume_signals.insert(for_thread);
   }
 
-  v8::debug::SetBlackBoxPausesPolicy(target_isolate, false);
-
   GetCV(for_thread)->NotifyAll();
 
   LogV8("resumeWorker.2/2", "[signaled]");
@@ -1957,12 +1956,11 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
 
   LogV8("runOnColdWorker.2/6", "[job created]");
 
-  v8::debug::SetBlackBoxPausesPolicy(target_isolate, true);
-
   // schedule interrupt on the worker's isolate to execute the task
   target_isolate->RequestInterrupt(
       [](v8::Isolate* isolate, void* /*data*/) {
         LogV8("runOnColdWorker", "[interruption requested]");
+        v8::debug::SetBlackBoxPausesPolicy(isolate, true);
         v8::debug::BreakRightNow(
             isolate,
             v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
@@ -1982,8 +1980,6 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
 
   LogV8("runOnColdWorker.5/6", "type",
         static_cast<int>(g_task_result.commTypeID));
-
-  v8::debug::SetBlackBoxPausesPolicy(target_isolate, false);
 
   LogV8("runOnColdWorker.6/6", "[finished]");
 
