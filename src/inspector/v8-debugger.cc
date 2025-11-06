@@ -50,6 +50,7 @@ v8::base::ConditionVariable g_main_cv;
 
 v8::base::Mutex g_paused_mutex;
 std::unordered_set<std::string> g_paused_thread_ids;
+std::unordered_set<std::string> g_resume_signals;
 
 v8::base::Mutex g_worker_map_mutex; // protect access to g_worker_* maps
 thread_local std::string t_worker_thread_id;
@@ -816,9 +817,16 @@ void V8Debugger::handleProgramBreak(
     LogV8("handleProgramBreak.1/3");
 
     bool is_paused = false;
+    bool is_resumed = false;
     {
       v8::base::MutexGuard guard(&g_paused_mutex);
       is_paused = g_paused_thread_ids.count(t_worker_thread_id) > 0;
+      is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0; // Consume the signal
+    }
+
+    if (is_resumed) {
+      LogV8("handleProgramBreak.3/3", "[resumed]");
+      return;
     }
 
     v8::Context::Scope scope(pausedContext);
@@ -1808,9 +1816,23 @@ void V8Debugger::pauseWorker(const std::string& id, const std::string& type, con
   v8::debug::SetBlackBoxPausesPolicy(m_isolate, true);
 
   if (!isPaused()) {
-    v8::base::MutexGuard guard(&g_paused_mutex);
-    g_paused_thread_ids.insert(t_worker_thread_id);
-    (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
+    bool is_resumed = false;
+    {
+      v8::base::MutexGuard guard(&g_paused_mutex);
+      g_paused_thread_ids.insert(t_worker_thread_id);
+      is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0;
+      if (!is_resumed) {
+        (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
+      }
+    }
+    if (is_resumed) {
+      LogV8("pauseWorker.2/4", "[skip pause, process task directly]");
+      // Don't pause, but still process the task synchronously
+      v8::Context::Scope scope(m_isolate->GetCurrentContext());
+      processTaskOnStack();
+      LogV8("pauseWorker.4/4", "[task processed without pause]");
+      return;
+    }
     LogV8("pauseWorker.2/4", "[preparing]");
   } else {
     LogV8("pauseWorker.4/4", "[skip already paused]");
@@ -1848,7 +1870,7 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
 
   {
     v8::base::MutexGuard guard(&g_paused_mutex);
-    g_paused_thread_ids.erase(for_thread);
+    if (g_paused_thread_ids.erase(for_thread) == 0) g_resume_signals.insert(for_thread);
   }
 
   v8::debug::SetBlackBoxPausesPolicy(target_isolate, false);
