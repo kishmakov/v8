@@ -49,8 +49,8 @@ std::mutex log_mutex; // should be global, because of usage in template function
 v8::base::ConditionVariable g_main_cv;
 
 v8::base::Mutex g_paused_mutex;
-std::unordered_set<std::string> g_paused_thread_ids;
 std::unordered_set<std::string> g_resume_signals;
+std::unordered_map<std::string, int> g_pause_depth;
 
 v8::base::Mutex g_worker_map_mutex; // protect access to g_worker_* maps
 thread_local std::string t_worker_thread_id;
@@ -74,6 +74,12 @@ shared_cv GetCV(const std::string& id) {
     g_cvs.emplace(id, std::make_shared<v8::base::ConditionVariable>());
   }
   return g_cvs[id];
+}
+
+int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
+  auto [it, inserted] = g_pause_depth.try_emplace(thread_id, 0);
+  it->second = std::max(it->second + delta, 0);
+  return it->second;
 }
 
 #pragma clang diagnostic pop
@@ -820,7 +826,7 @@ void V8Debugger::handleProgramBreak(
     bool is_resumed = false;
     {
       v8::base::MutexGuard guard(&g_paused_mutex);
-      is_paused = g_paused_thread_ids.count(t_worker_thread_id) > 0;
+      is_paused = GetPauseDepthSync(t_worker_thread_id) > 0;
       is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0; // Consume the signal
     }
 
@@ -851,7 +857,7 @@ void V8Debugger::handleProgramBreak(
     for (;;) {
       {
         v8::base::MutexGuard guard(&g_paused_mutex);
-        if (!g_paused_thread_ids.contains(t_worker_thread_id)) break;
+        if (GetPauseDepthSync(t_worker_thread_id) == 0) break;
         cv->Wait(&g_paused_mutex);
       }
 
@@ -1820,7 +1826,7 @@ void V8Debugger::pauseWorker(const std::string& id, const std::string& type, con
     bool is_resumed = false;
     {
       v8::base::MutexGuard guard(&g_paused_mutex);
-      g_paused_thread_ids.insert(t_worker_thread_id);
+      GetPauseDepthSync(t_worker_thread_id, 1);
       is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0;
       if (!is_resumed) {
         (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
@@ -1871,7 +1877,9 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
 
   {
     v8::base::MutexGuard guard(&g_paused_mutex);
-    if (g_paused_thread_ids.erase(for_thread) == 0) g_resume_signals.insert(for_thread);
+    bool was_not_paused = 0 == GetPauseDepthSync(for_thread);
+    GetPauseDepthSync(for_thread, -1);
+    if (was_not_paused) g_resume_signals.insert(for_thread);
   }
 
   GetCV(for_thread)->NotifyAll();
@@ -1879,18 +1887,12 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
   LogV8("resumeWorker.2/2", "[signaled]");
 }
 
-bool V8Debugger::isThreadPaused(const std::string& thread_id) const {
-  if (!enabled()) return false;
-
-  bool result = false;
-
-  {
-    v8::base::MutexGuard guard(&g_paused_mutex);
-    result = g_paused_thread_ids.contains(thread_id);
-  }
-
-  LogV8("isThreadPaused.1/1", "thread_id", thread_id, "result", result);
-  return result;
+int V8Debugger::getPauseDepth(const std::string& thread_id) const {
+  if (!enabled()) return 0;
+  v8::base::MutexGuard guard(&g_paused_mutex);
+  int depth = GetPauseDepthSync(thread_id);
+  LogV8("getPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
+  return depth;
 }
 
 void WaitTaskProcession(const std::string& thread_id) {

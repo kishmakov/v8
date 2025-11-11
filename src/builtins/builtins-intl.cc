@@ -1357,17 +1357,17 @@ BUILTIN(ResumeType) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
-BUILTIN(IsThreadPaused) {
-  BuiltinsLog().lock(++counter) << " IsThreadPaused.1/1";
+BUILTIN(GetPauseDepth) {
+  BuiltinsLog().lock(++counter) << " GetPauseDepth.1/1";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  bool is_paused = GetDebugger(v8_isolate)->isThreadPaused(thread_id);
+  int pause_depth = GetDebugger(v8_isolate)->getPauseDepth(thread_id);
 
-  BuiltinsLog() << " thread=" << thread_id << " paused=" << is_paused << std::endl;
-  return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, is_paused));
+  BuiltinsLog() << " thread=" << thread_id << " depth=" << pause_depth << std::endl;
+  return *Utils::OpenHandle(*v8::Number::New(v8_isolate, pause_depth));
 }
 
 BUILTIN(RegisterWorker) {

@@ -2820,10 +2820,10 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                     isolate_->initial_object_prototype(),
                     Builtin::kResumeCall, 1, kDontAdapt);
 
-    InstallFunction(isolate_, global, "IsThreadPaused", JS_PRIMITIVE_WRAPPER_TYPE,
+    InstallFunction(isolate_, global, "GetPauseDepth", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),
-                    Builtin::kIsThreadPaused, 1, kDontAdapt);
+                    Builtin::kGetPauseDepth, 1, kDontAdapt);
 
     InstallFunction(isolate_, global, "RegisterWorker", JS_PRIMITIVE_WRAPPER_TYPE,
         JSPrimitiveWrapper::kHeaderSize, 0,

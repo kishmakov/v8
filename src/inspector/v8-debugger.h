@@ -110,7 +110,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
 
   void pauseWorker(const std::string& id, const std::string& type, const std::string& target_id);
   void resumeWorker(const std::string& for_thread, const std::string& type, const std::string& target_id) const;
-  bool isThreadPaused(const std::string& thread_id) const;
+  int getPauseDepth(const std::string& thread_id) const;
   V8ExecutionResult runOnPaused(const std::string& thread_id,
                                 std::string target_id, std::string member_id,
                                 std::string args_json, bool is_async) const;
