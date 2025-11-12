@@ -58,13 +58,6 @@ std::unordered_map<std::string, v8::Isolate*> g_worker_thread_isolates;
 std::unordered_map<std::string, v8::Global<v8::Context>> g_worker_contexts;
 std::unordered_map<std::string, v8::Global<v8::Function>> g_worker_funcs;
 
-v8::base::Mutex g_task_mutex;
-V8ExecutionResult g_task_result;
-std::string g_task_target_id = "";
-std::string g_task_member_id = "";
-std::string g_task_args_json = "";
-bool g_task_is_async = false;
-
 bool g_sync_call = false;
 
 shared_cv GetCV(const std::string& id) {
@@ -77,14 +70,6 @@ shared_cv GetCV(const std::string& id) {
   }
   return g_cvs[id];
 }
-
-int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
-  auto [it, inserted] = g_pause_depth.try_emplace(thread_id, 0);
-  it->second = std::max(it->second + delta, 0);
-  return it->second;
-}
-
-#pragma clang diagnostic pop
 
 struct PairPrinter {
   std::ostream& log;
@@ -130,15 +115,93 @@ void LogV8(const char* event, Args&&... args) {
   log << std::endl << std::flush;
 }
 
-template <typename...>
-void MoveTaskParamsImpl() {}
+struct ThreadTask {
+  const std::string thread_src;     // ID of the thread that sent this task
+  const std::string thread_dst;     // ID of the thread that should execute this task
 
-template <typename T, typename... Rest>
-void MoveTaskParamsImpl(T& to, T& from, Rest&... rest) {
-  to = std::move(from);
-  from = T{};
-  MoveTaskParamsImpl(rest...);
+  const std::string target_id;      // Target object or function
+  const std::string member_id;      // Member/method to call
+  const std::string args_json;      // JSON-encoded arguments
+  const bool is_async;              // Whether this is an async task
+
+  bool completed = false;           // Whether the task has been completed
+  V8ExecutionResult result{};       // Result of task execution
+};
+
+typedef std::unique_ptr<ThreadTask> ThreadTaskPtr;
+
+// Bidirectional task exchange structure with per-thread ownership
+struct TaskExchange {
+  v8::base::Mutex tasks_mutex;
+  std::unordered_map<std::string, ThreadTaskPtr> tasks;
+
+  // Get and take ownership of task for the given thread_id
+  ThreadTask* ShowTask(const std::string& thread_id) {
+    v8::base::MutexGuard lk(&tasks_mutex);
+    auto it = tasks.find(thread_id);
+    return it == tasks.end() ? nullptr : it->second.get();
+  }
+
+  // Schedule a task with explicit thread context: source and destination
+  bool ScheduleTask(const std::string& thread_src,
+                    const std::string& thread_dst,
+                    std::string&& target_id,
+                    std::string&& member_id,
+                    std::string&& args_json,
+                    bool is_async) {
+    v8::base::MutexGuard lk(&tasks_mutex);
+
+    auto [it, inserted] = tasks.emplace(
+        thread_dst, std::make_unique<ThreadTask>(ThreadTask{
+                        thread_src, thread_dst, std::move(target_id),
+                        std::move(member_id), std::move(args_json), is_async}));
+
+    return inserted;
+  }
+
+  V8ExecutionResult WaitTaskProcession(const std::string& thread_id) {
+    auto cv = GetCV(thread_id);
+
+    // make sure that suspended thread is notified
+    cv->NotifyAll();
+
+    v8::base::MutexGuard guard(&tasks_mutex);
+    while (HasTaskSync(thread_id)) {
+      cv->Wait(&tasks_mutex);
+      if (g_sync_call) {
+        LogV8("WaitTaskProcession", "[>>> sync call detected <<<]");
+        g_sync_call = false;
+      }
+    }
+
+    return GetResultSync(thread_id);
+  }
+
+private:
+  bool HasTaskSync(const std::string& thread_id) {
+    auto it = tasks.find(thread_id);
+    return it != tasks.end() && !it->second->completed;
+  }
+
+  V8ExecutionResult GetResultSync(const std::string& thread_id) {
+    V8ExecutionResult result{};
+    if (const auto it = tasks.find(thread_id); it != tasks.end()) {
+      result = std::move(it->second->result);
+      tasks.erase(it);
+    }
+    return result;
+  }
+};
+
+TaskExchange g_task_exchange;
+
+int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
+  auto [it, inserted] = g_pause_depth.try_emplace(thread_id, 0);
+  it->second = std::max(it->second + delta, 0);
+  return it->second;
 }
+
+#pragma clang diagnostic pop
 
 class PokeTask : public v8::Task {
  public:
@@ -726,30 +789,16 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
   return result;
 }
 
-template <typename T, typename... Rest>
-void MoveTaskParams(T& to, T& from, Rest&... rest) {
-  v8::base::MutexGuard lk(&g_task_mutex);
-  MoveTaskParamsImpl(to, from, rest...);
-}
-
 void V8Debugger::processTaskOnStack() const {
-  std::string target_id;
-  std::string member_id;
-  std::string args_json;
-  bool is_async = false;
+  ThreadTask* task = g_task_exchange.ShowTask(t_worker_thread_id);
 
-  MoveTaskParams(target_id, g_task_target_id,
-    member_id, g_task_member_id,
-    args_json, g_task_args_json,
-    is_async, g_task_is_async);
-
-  if (target_id.empty()) {
+  if (task == nullptr) {
     LogV8("processTaskOnStack.3/3", "[empty task]");
     return;
   }
 
-  LogV8("processTaskOnStack.1/3", "target", target_id,
-      "member", member_id, "is_async", is_async);
+  LogV8("processTaskOnStack.1/3", "target", task->target_id,
+      "member", task->member_id, "is_async", task->is_async);
 
   // const v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
 
@@ -770,31 +819,26 @@ void V8Debugger::processTaskOnStack() const {
 
   const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
 
-  const v8::Local<v8::Value> v8_target = cppToV8(m_isolate, target_id);
-  const v8::Local<v8::Value> v8_member = cppToV8(m_isolate, member_id);
-  const v8::Local<v8::Value> v8_args = cppToV8(m_isolate, args_json);
-  const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, is_async);
+  const v8::Local<v8::Value> v8_target = cppToV8(m_isolate, task->target_id);
+  const v8::Local<v8::Value> v8_member = cppToV8(m_isolate, task->member_id);
+  const v8::Local<v8::Value> v8_args = cppToV8(m_isolate, task->args_json);
+  const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, task->is_async);
 
   v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
 
   v8::MaybeLocal<v8::Value> call_result =
     call_function->Call(v8_context, v8_context->Global(), 4, argv);
 
-  V8ExecutionResult local_result{};
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
     LogV8("processTaskOnStack.3/3", "failed with exception", *msg ? *msg : "<unknown>");
   } else {
     LogV8("processTaskOnStack.2/3");
-    local_result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
-    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(local_result.commTypeID));
+    task->result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
+    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(task->result.commTypeID));
   }
 
-  {
-    v8::base::MutexGuard lk(&g_task_mutex);
-    g_task_result = local_result;
-  }
-
+  task->completed = true;
   GetCV(t_worker_thread_id)->NotifyAll();
 }
 
@@ -1897,86 +1941,76 @@ int V8Debugger::getPauseDepth(const std::string& thread_id) const {
   return depth;
 }
 
-void WaitTaskProcession(const std::string& thread_id) {
-  auto cv = GetCV(thread_id);
-
-  // make sure that suspended thread is notified
-  cv->NotifyAll();
-
-  v8::base::MutexGuard guard(&g_task_mutex);
-  while (!g_task_target_id.empty()) {
-    cv->Wait(&g_task_mutex);
-    if (g_sync_call) {
-      LogV8("WaitTaskProcession", "[>>> sync call detected <<<]");
-      g_sync_call = false;
-    }
-  }
-}
-
 V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
-                                              std::string target_id,
-                                              std::string member_id,
-                                              std::string args_json) const {
+                                              std::string&& target_id,
+                                              std::string&& member_id,
+                                              std::string&& args_json) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
-  g_sync_call = true;
-  GetCV(thread_id)->NotifyAll();
+  const std::string host_id = "host";
 
-  LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
-  return g_task_result;
+  LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
+
+  g_task_exchange.ScheduleTask(thread_id, host_id, std::move(target_id),
+                               std::move(member_id), std::move(args_json),
+                               false); // TODO: is_async
+  // TODO: should synchronize on thread_id properly
+  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(host_id);
+
+  LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
+  return result;
 }
 
-V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_id,
-                                                std::string target_id,
-                                                std::string member_id,
-                                                std::string args_json,
+V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
+                                                const std::string& thread_dst,
+                                                std::string&& target_id,
+                                                std::string&& member_id,
+                                                std::string&& args_json,
                                                 bool is_async) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedWorker.1/2", "thread", thread_id, "target", target_id,
-    "member", member_id, "is_async", is_async);
+  LogV8("runOnPausedWorker.1/2", "thread_src", thread_src, "thread_dst",
+        thread_dst, "target", target_id, "member", member_id, "is_async",
+        is_async);
 
-  MoveTaskParams(g_task_target_id, target_id,
-    g_task_member_id, member_id,
-    g_task_args_json, args_json,
-    g_task_is_async, is_async);
-
-  WaitTaskProcession(thread_id);
-
-  LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
-  return g_task_result;
+  g_task_exchange.ScheduleTask(thread_src, thread_dst, std::move(target_id),
+                               std::move(member_id), std::move(args_json),
+                               is_async);
+  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(thread_dst);
+  LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
+  return result;
 }
 
-V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
-                                              std::string target_id,
-                                              std::string member_id,
-                                              std::string args_json,
+V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
+                                              const std::string& thread_dst,
+                                              std::string&& target_id,
+                                              std::string&& member_id,
+                                              std::string&& args_json,
                                               bool is_async) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnColdWorker.1/6", "thread", thread_id, "target", target_id,
-        "member", member_id, "is_async", is_async);
+  LogV8("runOnColdWorker.1/5", "thread_src", thread_src, "thread_dst",
+        thread_dst, "target", target_id, "member", member_id, "is_async",
+        is_async);
 
   // Resolve the target isolate for this worker thread_id.
   v8::Isolate* target_isolate = nullptr;
   {
     v8::base::MutexGuard lk(&g_worker_map_mutex);
-    auto it = g_worker_thread_isolates.find(thread_id);
+    auto it = g_worker_thread_isolates.find(thread_dst);
     if (it != g_worker_thread_isolates.end()) target_isolate = it->second;
   }
 
   if (!target_isolate) {
-    LogV8("runOnColdWorker.6/6", "[failed to find isolate]");
+    LogV8("runOnColdWorker.5/5", "[failed to find isolate]");
     return V8ExecutionResult{};
   }
 
-  MoveTaskParams(g_task_target_id, target_id,
-    g_task_member_id, member_id,
-    g_task_args_json, args_json,
-    g_task_is_async, is_async);
+  g_task_exchange.ScheduleTask(thread_src, thread_dst, std::move(target_id),
+                                 std::move(member_id), std::move(args_json),
+                                 is_async);
 
-  LogV8("runOnColdWorker.2/6", "[job created]");
+  LogV8("runOnColdWorker.2/5", "[job created]");
 
   // schedule interrupt on the worker's isolate to execute the task
   target_isolate->RequestInterrupt(
@@ -1989,23 +2023,19 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_id,
       },
       nullptr);
 
-  LogV8("runOnColdWorker.3/6", "[debugger enabled]");
+  LogV8("runOnColdWorker.3/5", "[debugger enabled]");
 
   // force post cold worker thread to run a foreground poke task
   auto* platform = v8::debug::GetCurrentPlatform();
   auto runner = platform->GetForegroundTaskRunner(target_isolate);
   runner->PostTask(std::make_unique<PokeTask>(target_isolate));
 
-  LogV8("runOnColdWorker.4/6", "[phony task posted]");
+  LogV8("runOnColdWorker.4/5", "[phony task posted]");
 
-  WaitTaskProcession(thread_id);
+  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(thread_dst);
+  LogV8("runOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
 
-  LogV8("runOnColdWorker.5/6", "type",
-        static_cast<int>(g_task_result.commTypeID));
-
-  LogV8("runOnColdWorker.6/6", "[finished]");
-
-  return g_task_result;
+  return result;
 }
 
 void V8Debugger::registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> func) const {
