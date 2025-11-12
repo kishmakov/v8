@@ -65,6 +65,8 @@ std::string g_task_member_id = "";
 std::string g_task_args_json = "";
 bool g_task_is_async = false;
 
+bool g_sync_call = false;
+
 shared_cv GetCV(const std::string& id) {
   static v8::base::Mutex g_cv_mutex;
   static std::unordered_map<std::string, shared_cv> g_cvs;
@@ -1904,17 +1906,35 @@ void WaitTaskProcession(const std::string& thread_id) {
   v8::base::MutexGuard guard(&g_task_mutex);
   while (!g_task_target_id.empty()) {
     cv->Wait(&g_task_mutex);
+    if (g_sync_call) {
+      LogV8("WaitTaskProcession", "[>>> sync call detected <<<]");
+      g_sync_call = false;
+    }
   }
 }
 
-V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
-                             std::string target_id,
-                             std::string member_id,
-                             std::string args_json,
-                             bool is_async) const {
+V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
+                                              std::string target_id,
+                                              std::string member_id,
+                                              std::string args_json) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPaused.1/2", "thread", thread_id, "target", target_id,
+  LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
+  g_sync_call = true;
+  GetCV(thread_id)->NotifyAll();
+
+  LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
+  return g_task_result;
+}
+
+V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_id,
+                                                std::string target_id,
+                                                std::string member_id,
+                                                std::string args_json,
+                                                bool is_async) const {
+  if (!enabled()) return V8ExecutionResult{};
+
+  LogV8("runOnPausedWorker.1/2", "thread", thread_id, "target", target_id,
     "member", member_id, "is_async", is_async);
 
   MoveTaskParams(g_task_target_id, target_id,
@@ -1924,7 +1944,7 @@ V8ExecutionResult V8Debugger::runOnPaused(const std::string& thread_id,
 
   WaitTaskProcession(thread_id);
 
-  LogV8("runOnPaused.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
+  LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(g_task_result.commTypeID));
   return g_task_result;
 }
 

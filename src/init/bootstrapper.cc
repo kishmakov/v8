@@ -2810,15 +2810,20 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
   }
 
   { // ---  W o r k e r ---
-    InstallFunction(isolate_, global, "WaitCall", JS_PRIMITIVE_WRAPPER_TYPE,
-                    JSPrimitiveWrapper::kHeaderSize, 0,
-                    isolate_->initial_object_prototype(),
-                    Builtin::kWaitCall, 1, kDontAdapt);
-
     InstallFunction(isolate_, global, "ResumeCall", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),
                     Builtin::kResumeCall, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "SyncCall", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kSyncCall, 1, kDontAdapt);
+
+    InstallFunction(isolate_, global, "WaitCall", JS_PRIMITIVE_WRAPPER_TYPE,
+                    JSPrimitiveWrapper::kHeaderSize, 0,
+                    isolate_->initial_object_prototype(),
+                    Builtin::kWaitCall, 1, kDontAdapt);
 
     InstallFunction(isolate_, global, "GetPauseDepth", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,

@@ -2134,8 +2134,9 @@ namespace internal {
   TFJ(StringPrototypeToLocaleLowerCase, kDontAdaptArgumentsSentinel)           \
   /* ecma402 #sup-string.prototype.tolocaleuppercase */                        \
   CPP(StringPrototypeToLocaleUpperCase, kDontAdaptArgumentsSentinel)           \
-  CPP(WaitCall, kDontAdaptArgumentsSentinel)                                   \
   CPP(ResumeCall, kDontAdaptArgumentsSentinel)                                 \
+  CPP(SyncCall, kDontAdaptArgumentsSentinel)                                   \
+  CPP(WaitCall, kDontAdaptArgumentsSentinel)                                   \
   CPP(WaitType, kDontAdaptArgumentsSentinel)                                   \
   CPP(ResumeType, kDontAdaptArgumentsSentinel)                                 \
   CPP(GetPauseDepth, kDontAdaptArgumentsSentinel)                              \
