@@ -1328,6 +1328,35 @@ BUILTIN(WaitCall) {
   return *result;
 }
 
+BUILTIN(PauseThread) {
+  int my_counter = ++counter;
+  BuiltinsLog().lock(my_counter) << " PauseThread.1/3";
+
+  HandleScope scope(isolate);
+  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+
+  std::string thread_id = IdToString(args, isolate, 1);
+  std::string target_id = IdToString(args, isolate, 2);
+  std::string result_id = IdToString(args, isolate, 3);
+
+  BuiltinsLog() << " thread=" << thread_id << " result=" << result_id << " target=" << target_id << std::endl;
+
+  if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
+
+  if (!GetDebugger(v8_isolate)->enabled()) {
+    GetDebugger(v8_isolate)->enable();
+  }
+
+  // Initiate internal silent wait pause via V8Debugger.
+  BuiltinsLog().lock(my_counter) << " PauseThread.2/3" << std::endl;
+  GetDebugger(v8_isolate)->pauseWorker(result_id, "call", target_id);
+
+  BuiltinsLog().lock(my_counter) << " PauseThread.3/3";
+  Handle<Object> result = UnshelveValue(isolate, result_id);
+  BuiltinsLog() << std::endl;
+  return *result;
+}
+
 BUILTIN(WaitType) {
   int my_counter = ++counter;
   BuiltinsLog().lock(my_counter) << " WaitType.1/3";

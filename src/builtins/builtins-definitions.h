@@ -2137,6 +2137,7 @@ namespace internal {
   CPP(ResumeCall, kDontAdaptArgumentsSentinel)                                 \
   CPP(SyncCall, kDontAdaptArgumentsSentinel)                                   \
   CPP(WaitCall, kDontAdaptArgumentsSentinel)                                   \
+  CPP(PauseThread, kDontAdaptArgumentsSentinel)                                \
   CPP(WaitType, kDontAdaptArgumentsSentinel)                                   \
   CPP(ResumeType, kDontAdaptArgumentsSentinel)                                 \
   CPP(GetPauseDepth, kDontAdaptArgumentsSentinel)                              \
