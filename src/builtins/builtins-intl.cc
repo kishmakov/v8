@@ -1430,10 +1430,12 @@ BUILTIN(RunOnPaused) {
   std::string thread_src = IdToString(args, isolate, 1);
   std::string thread_dst = IdToString(args, isolate, 2);
 
-  std::string target_id = IdToString(args, isolate, 3);
-  std::string member_id = IdToString(args, isolate, 4);
-  std::string str_args = IdToString(args, isolate, 5);
-  bool is_async = IdToBool(args, isolate, 6);
+  std::string req_type = IdToString(args, isolate, 3);
+
+  std::string target_id = IdToString(args, isolate, 4);
+  std::string member_id = IdToString(args, isolate, 5);
+  std::string str_args = IdToString(args, isolate, 6);
+  bool is_async = IdToBool(args, isolate, 7);
 
   BuiltinsLog()
     << " " << thread_src << "->" << thread_dst
@@ -1442,9 +1444,10 @@ BUILTIN(RunOnPaused) {
     << " str_args=" << str_args
     << std::endl;
 
-  auto result = GetDebugger(v8_isolate)->runOnPausedWorker(
-    thread_src, thread_dst, std::move(target_id), std::move(member_id), std::move(str_args), is_async
-  );
+  auto result = GetDebugger(v8_isolate)
+                    ->runOnPausedWorker(
+                        thread_src, thread_dst, req_type, std::move(target_id),
+                        std::move(member_id), std::move(str_args), is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnPaused.2/2"
     << " type=" << static_cast<int>(result.commTypeID)
@@ -1463,10 +1466,13 @@ BUILTIN(RunOnCold) {
 
   std::string thread_src = IdToString(args, isolate, 1);
   std::string thread_dst = IdToString(args, isolate, 2);
-  std::string target_id = IdToString(args, isolate, 3);
-  std::string member_id = IdToString(args, isolate, 4);
-  std::string str_args = IdToString(args, isolate, 5);
-  bool is_async = IdToBool(args, isolate, 6);
+
+  std::string req_type = IdToString(args, isolate, 3);
+
+  std::string target_id = IdToString(args, isolate, 4);
+  std::string member_id = IdToString(args, isolate, 5);
+  std::string str_args = IdToString(args, isolate, 6);
+  bool is_async = IdToBool(args, isolate, 7);
 
   BuiltinsLog()
     << " thread_src=" << thread_src
@@ -1478,7 +1484,7 @@ BUILTIN(RunOnCold) {
 
   auto result = GetDebugger(v8_isolate)
                     ->runOnColdWorker(
-                        thread_src, thread_dst, std::move(target_id),
+                        thread_src, thread_dst,  req_type, std::move(target_id),
                         std::move(member_id), std::move(str_args), is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnCold.2/2"

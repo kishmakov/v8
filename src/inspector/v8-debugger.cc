@@ -119,6 +119,7 @@ struct ThreadTask {
   const std::string thread_src;     // ID of the thread that sent this task
   const std::string thread_dst;     // ID of the thread that should execute this task
 
+  const std::string req_type;       // type for dispatching on JS side
   const std::string target_id;      // Target object or function
   const std::string member_id;      // Member/method to call
   const std::string args_json;      // JSON-encoded arguments
@@ -145,6 +146,7 @@ struct TaskExchange {
   // Schedule a task with explicit thread context: source and destination
   bool ScheduleTask(const std::string& thread_src,
                     const std::string& thread_dst,
+                    const std::string& req_type,
                     std::string&& target_id,
                     std::string&& member_id,
                     std::string&& args_json,
@@ -153,7 +155,7 @@ struct TaskExchange {
 
     auto [it, inserted] = tasks.emplace(
         thread_dst, std::make_unique<ThreadTask>(ThreadTask{
-                        thread_src, thread_dst, std::move(target_id),
+                        thread_src, thread_dst, req_type, std::move(target_id),
                         std::move(member_id), std::move(args_json), is_async}));
 
     return inserted;
@@ -819,15 +821,17 @@ void V8Debugger::processTaskOnStack() const {
 
   const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
 
+  const v8::Local<v8::Value> v8_req_type = cppToV8(m_isolate, task->req_type);
   const v8::Local<v8::Value> v8_target = cppToV8(m_isolate, task->target_id);
   const v8::Local<v8::Value> v8_member = cppToV8(m_isolate, task->member_id);
   const v8::Local<v8::Value> v8_args = cppToV8(m_isolate, task->args_json);
   const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, task->is_async);
 
-  v8::Local<v8::Value> argv[4] = {v8_target, v8_member, v8_args, v8_async};
+  constexpr size_t num_args = 5;
+  v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async};
 
   v8::MaybeLocal<v8::Value> call_result =
-    call_function->Call(v8_context, v8_context->Global(), 4, argv);
+    call_function->Call(v8_context, v8_context->Global(), num_args, argv);
 
   if (try_catch.HasCaught() || call_result.IsEmpty()) {
     v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
@@ -1951,7 +1955,7 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
 
   LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
 
-  g_task_exchange.ScheduleTask(thread_id, host_id, std::move(target_id),
+  g_task_exchange.ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
                                std::move(member_id), std::move(args_json),
                                false); // TODO: is_async
   // TODO: should synchronize on thread_id properly
@@ -1963,6 +1967,7 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
 
 V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
                                                 const std::string& thread_dst,
+                                                const std::string& req_type,
                                                 std::string&& target_id,
                                                 std::string&& member_id,
                                                 std::string&& args_json,
@@ -1973,9 +1978,9 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
         thread_dst, "target", target_id, "member", member_id, "is_async",
         is_async);
 
-  g_task_exchange.ScheduleTask(thread_src, thread_dst, std::move(target_id),
-                               std::move(member_id), std::move(args_json),
-                               is_async);
+  g_task_exchange.ScheduleTask(thread_src, thread_dst, req_type,
+                               std::move(target_id), std::move(member_id),
+                               std::move(args_json), is_async);
   V8ExecutionResult result = g_task_exchange.WaitTaskProcession(thread_dst);
   LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
@@ -1983,6 +1988,7 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
 
 V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
                                               const std::string& thread_dst,
+                                              const std::string& req_type,
                                               std::string&& target_id,
                                               std::string&& member_id,
                                               std::string&& args_json,
@@ -2006,7 +2012,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
     return V8ExecutionResult{};
   }
 
-  g_task_exchange.ScheduleTask(thread_src, thread_dst, std::move(target_id),
+  g_task_exchange.ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
                                  std::move(member_id), std::move(args_json),
                                  is_async);
 
