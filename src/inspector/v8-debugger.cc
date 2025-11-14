@@ -127,12 +127,10 @@ struct ThreadTask {
   V8ExecutionResult result{};       // Result of task execution
 };
 
-typedef std::unique_ptr<ThreadTask> ThreadTaskPtr;
-
 // Bidirectional task exchange structure with per-thread ownership
 struct TaskExchange {
   static inline v8::base::Mutex tasks_mutex;
-  static inline std::unordered_map<std::string, ThreadTaskPtr> tasks;
+  static inline std::unordered_map<std::string, ThreadTask> tasks;
 
   // Promise-like ticket returned to the caller to wait for completion.
   struct TaskPromise {
@@ -165,11 +163,11 @@ struct TaskExchange {
     shared_cv cv_ = nullptr;
   };
 
-  // Get and take ownership of task for the given thread_id
+  // Get task pointer for the given thread_id (does not transfer ownership)
   static ThreadTask* ShowTask(const std::string& thread_id) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto it = tasks.find(thread_id);
-    return it == tasks.end() ? nullptr : it->second.get();
+    return it == tasks.end() ? nullptr : &it->second;
   }
 
   // Schedule a task with explicit thread context: source and destination
@@ -178,26 +176,25 @@ struct TaskExchange {
                                   const std::string& req_type,
                                   std::string&& target_id,
                                   std::string&& member_id,
-                                  std::string&& args_json,
-                                  bool is_async) {
+                                  std::string&& args_json, bool is_async) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto [it, inserted] = tasks.emplace(
-        thread_dst, std::make_unique<ThreadTask>(ThreadTask{
-                        thread_src, thread_dst, req_type, std::move(target_id),
-                        std::move(member_id), std::move(args_json), is_async}));
+        thread_dst,
+        ThreadTask{thread_src, thread_dst, req_type, std::move(target_id),
+                   std::move(member_id), std::move(args_json), is_async});
     return inserted ? TaskPromise(thread_dst) : TaskPromise();
   }
 
-private:
+ private:
   static bool HasTaskSync(const std::string& thread_id) {
     auto it = tasks.find(thread_id);
-    return it != tasks.end() && !it->second->completed;
+    return it != tasks.end() && !it->second.completed;
   }
 
   static V8ExecutionResult GetResultSync(const std::string& thread_id) {
     V8ExecutionResult result{};
     if (const auto it = tasks.find(thread_id); it != tasks.end()) {
-      result = std::move(it->second->result);
+      result = std::move(it->second.result);
       tasks.erase(it);
     }
     return result;
