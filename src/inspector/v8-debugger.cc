@@ -207,6 +207,17 @@ int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
   return it->second;
 }
 
+void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
+  v8::debug::SetBlackBoxPausesPolicy(isolate, true);
+  const v8::debug::BreakReasons internal{v8::debug::BreakReason::kInternalWait};
+  v8::debug::BreakRightNow(isolate, internal);
+}
+
+void ResetCurrentThread(v8::Isolate* isolate, int* context_group) {
+  v8::debug::SetBlackBoxPausesPolicy(isolate, false);
+  *context_group = 0;
+}
+
 #pragma clang diagnostic pop
 
 class PokeTask : public v8::Task {
@@ -806,13 +817,8 @@ void V8Debugger::processTaskOnStack() const {
   LogV8("processTaskOnStack.1/3", "target", task->target_id,
       "member", task->member_id, "is_async", task->is_async);
 
-  // const v8::Local<v8::Context> v8_context = m_isolate->GetCurrentContext();
-
   v8::HandleScope handle_scope(m_isolate);
   const v8::TryCatch try_catch(m_isolate);
-
-  // v8::Local<v8::Value> context_value = GetV8GlobalContext(m_isolate, v8_context);
-  // const v8::Local<v8::Value> call_function_candidate = GetCallFunction(m_isolate, v8_context, context_value);
 
   v8::Local<v8::Context> v8_context = g_worker_contexts[t_worker_thread_id].Get(m_isolate).As<v8::Context>();;
   v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_worker_thread_id].Get(m_isolate).As<v8::Value>();;
@@ -892,8 +898,7 @@ void V8Debugger::handleProgramBreak(
     if (!is_paused) { // run on cold
         LogV8("handleProgramBreak.2/3", "[run on cold]");
         processTaskOnStack();
-        // Reset policy after task completes, from within worker thread
-        v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
+        ResetCurrentThread(m_isolate, &m_targetContextGroupId);
         LogV8("handleProgramBreak.3/3", "[success]");
         return;
     }
@@ -911,7 +916,7 @@ void V8Debugger::handleProgramBreak(
       processTaskOnStack();
     }
 
-    m_targetContextGroupId = 0;
+    ResetCurrentThread(m_isolate, &m_targetContextGroupId);
     LogV8("handleProgramBreak.3/3", "[success]");
     return;
   }
@@ -1862,45 +1867,42 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
 }
 
 void V8Debugger::pauseWorker(const std::string& id, const std::string& type, const std::string& target_id) {
-  if (!enabled()) return;
-
   LogV8("pauseWorker.1/4", "id", id, "type", type, "target", target_id);
 
-  v8::debug::SetBlackBoxPausesPolicy(m_isolate, true);
-
-  if (!isPaused()) {
-    bool is_resumed = false;
-    {
-      v8::base::MutexGuard guard(&g_paused_mutex);
-      GetPauseDepthSync(t_worker_thread_id, 1);
-      is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0;
-      if (!is_resumed) {
-        (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
-      }
-    }
-    if (is_resumed) {
-      LogV8("pauseWorker.2/4", "[skip pause, process task directly]");
-      // Don't pause, but still process the task synchronously
-      v8::Context::Scope scope(m_isolate->GetCurrentContext());
-      processTaskOnStack();
-      LogV8("pauseWorker.4/4", "[task processed without pause]");
-      return;
-    }
-    LogV8("pauseWorker.2/4", "[preparing]");
-  } else {
-    LogV8("pauseWorker.4/4", "[skip already paused]");
-    return;  // ignore nested or concurrent
+  if (!enabled() || isPaused()) {
+    LogV8(isPaused() ? "pauseWorker.4/4 [skip already paused]" : "pauseWorker.4/4 [skip disabled]");
+    return;
   }
+
+  bool is_resumed = false;
+
+  {
+    v8::base::MutexGuard guard(&g_paused_mutex);
+    GetPauseDepthSync(t_worker_thread_id, 1);
+    is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0;
+    if (!is_resumed) {
+      (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
+    }
+  }
+
+  if (is_resumed) {
+    LogV8("pauseWorker.2/4", "[skip pause, process task directly]");
+    // Don't pause, but still process the task synchronously
+    v8::Context::Scope scope(m_isolate->GetCurrentContext());
+    processTaskOnStack();
+    LogV8("pauseWorker.4/4", "[task processed without pause]");
+    return;
+  }
+
+  LogV8("pauseWorker.2/4", "[preparing]");
 
   const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
   m_targetContextGroupId = m_inspector->contextGroupId(context_id);
-
   DCHECK(m_targetContextGroupId);
 
   LogV8("pauseWorker.3/4", "[before break requested]");
-  v8::debug::BreakRightNow(
-      m_isolate,
-      v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
+
+  PauseCurrentThreadRightNow(m_isolate);
 
   LogV8("pauseWorker.4/4", "[after break requested]");
 }
@@ -2017,10 +2019,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
   target_isolate->RequestInterrupt(
       [](v8::Isolate* isolate, void* /*data*/) {
         LogV8("runOnColdWorker", "[interruption requested]");
-        v8::debug::SetBlackBoxPausesPolicy(isolate, true);
-        v8::debug::BreakRightNow(
-            isolate,
-            v8::debug::BreakReasons({v8::debug::BreakReason::kInternalWait}));
+        PauseCurrentThreadRightNow(isolate);
       },
       nullptr);
 
