@@ -133,35 +133,33 @@ typedef std::unique_ptr<ThreadTask> ThreadTaskPtr;
 
 // Bidirectional task exchange structure with per-thread ownership
 struct TaskExchange {
-  v8::base::Mutex tasks_mutex;
-  std::unordered_map<std::string, ThreadTaskPtr> tasks;
+  static inline v8::base::Mutex tasks_mutex;
+  static inline std::unordered_map<std::string, ThreadTaskPtr> tasks;
 
   // Get and take ownership of task for the given thread_id
-  ThreadTask* ShowTask(const std::string& thread_id) {
+  static ThreadTask* ShowTask(const std::string& thread_id) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto it = tasks.find(thread_id);
     return it == tasks.end() ? nullptr : it->second.get();
   }
 
   // Schedule a task with explicit thread context: source and destination
-  bool ScheduleTask(const std::string& thread_src,
-                    const std::string& thread_dst,
-                    const std::string& req_type,
-                    std::string&& target_id,
-                    std::string&& member_id,
-                    std::string&& args_json,
-                    bool is_async) {
+  static bool ScheduleTask(const std::string& thread_src,
+                           const std::string& thread_dst,
+                           const std::string& req_type,
+                           std::string&& target_id,
+                           std::string&& member_id,
+                           std::string&& args_json,
+                           bool is_async) {
     v8::base::MutexGuard lk(&tasks_mutex);
-
     auto [it, inserted] = tasks.emplace(
         thread_dst, std::make_unique<ThreadTask>(ThreadTask{
                         thread_src, thread_dst, req_type, std::move(target_id),
                         std::move(member_id), std::move(args_json), is_async}));
-
     return inserted;
   }
 
-  V8ExecutionResult WaitTaskProcession(const std::string& thread_id) {
+  static V8ExecutionResult WaitTaskProcession(const std::string& thread_id) {
     auto cv = GetCV(thread_id);
 
     // make sure that suspended thread is notified
@@ -180,12 +178,12 @@ struct TaskExchange {
   }
 
 private:
-  bool HasTaskSync(const std::string& thread_id) {
+  static bool HasTaskSync(const std::string& thread_id) {
     auto it = tasks.find(thread_id);
     return it != tasks.end() && !it->second->completed;
   }
 
-  V8ExecutionResult GetResultSync(const std::string& thread_id) {
+  static V8ExecutionResult GetResultSync(const std::string& thread_id) {
     V8ExecutionResult result{};
     if (const auto it = tasks.find(thread_id); it != tasks.end()) {
       result = std::move(it->second->result);
@@ -194,8 +192,6 @@ private:
     return result;
   }
 };
-
-TaskExchange g_task_exchange;
 
 int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
   auto [it, inserted] = g_pause_depth.try_emplace(thread_id, 0);
@@ -792,7 +788,7 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
 }
 
 void V8Debugger::processTaskOnStack() const {
-  ThreadTask* task = g_task_exchange.ShowTask(t_worker_thread_id);
+  ThreadTask* task = TaskExchange::ShowTask(t_worker_thread_id);
 
   if (task == nullptr) {
     LogV8("processTaskOnStack.3/3", "[empty task]");
@@ -854,9 +850,7 @@ void V8Debugger::handleProgramBreak(
   // Don't allow nested breaks.
   LogV8("handleProgramBreak.0/3",
     "break_internal", breakReasons.contains(v8::debug::BreakReason::kInternalWait),
-    "is_paused", isPaused(),
-    "m_targetContextGroupId", m_targetContextGroupId,
-    "contextGroupId", m_inspector->contextGroupId(pausedContext)
+    "is_paused", isPaused()
   );
 
   if (isPaused()) return;
@@ -889,12 +883,6 @@ void V8Debugger::handleProgramBreak(
 
     if (!is_paused) { // run on cold
         LogV8("handleProgramBreak.2/3", "[run on cold]");
-        // {
-        //   v8::base::MutexGuard task_guard(&g_task_mutex);
-        //   while (g_task_target_id.empty()) {
-        //     GetCV(t_worker_thread_id)->Wait(&g_task_mutex);
-        //   }
-        // }
         processTaskOnStack();
         // Reset policy after task completes, from within worker thread
         v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
@@ -1951,15 +1939,14 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
                                               std::string&& args_json) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  const std::string host_id = "host";
-
   LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
 
-  g_task_exchange.ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
-                               std::move(member_id), std::move(args_json),
-                               false); // TODO: is_async
+  const std::string host_id = "host";
+  TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
+                             std::move(member_id), std::move(args_json),
+                             false); // TODO: is_async
   // TODO: should synchronize on thread_id properly
-  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(host_id);
+  V8ExecutionResult result = TaskExchange::WaitTaskProcession(host_id);
 
   LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
@@ -1978,10 +1965,10 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
         thread_dst, "target", target_id, "member", member_id, "is_async",
         is_async);
 
-  g_task_exchange.ScheduleTask(thread_src, thread_dst, req_type,
-                               std::move(target_id), std::move(member_id),
-                               std::move(args_json), is_async);
-  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(thread_dst);
+  TaskExchange::ScheduleTask(thread_src, thread_dst, req_type,
+                             std::move(target_id), std::move(member_id),
+                             std::move(args_json), is_async);
+  V8ExecutionResult result = TaskExchange::WaitTaskProcession(thread_dst);
   LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
 }
@@ -2012,9 +1999,9 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
     return V8ExecutionResult{};
   }
 
-  g_task_exchange.ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
-                                 std::move(member_id), std::move(args_json),
-                                 is_async);
+  TaskExchange::ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
+                             std::move(member_id), std::move(args_json),
+                             is_async);
 
   LogV8("runOnColdWorker.2/5", "[job created]");
 
@@ -2038,7 +2025,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
 
   LogV8("runOnColdWorker.4/5", "[phony task posted]");
 
-  V8ExecutionResult result = g_task_exchange.WaitTaskProcession(thread_dst);
+  V8ExecutionResult result = TaskExchange::WaitTaskProcession(thread_dst);
   LogV8("runOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
 
   return result;
