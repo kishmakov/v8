@@ -58,8 +58,6 @@ std::unordered_map<std::string, v8::Isolate*> g_worker_thread_isolates;
 std::unordered_map<std::string, v8::Global<v8::Context>> g_worker_contexts;
 std::unordered_map<std::string, v8::Global<v8::Function>> g_worker_funcs;
 
-bool g_sync_call = false;
-
 shared_cv GetCV(const std::string& id) {
   static v8::base::Mutex g_cv_mutex;
   static std::unordered_map<std::string, shared_cv> g_cvs;
@@ -136,6 +134,37 @@ struct TaskExchange {
   static inline v8::base::Mutex tasks_mutex;
   static inline std::unordered_map<std::string, ThreadTaskPtr> tasks;
 
+  // Promise-like ticket returned to the caller to wait for completion.
+  struct TaskPromise {
+    TaskPromise() = default;
+    explicit TaskPromise(std::string id) : thread_id_(std::move(id)) {
+      if (!thread_id_.empty()) cv_ = GetCV(thread_id_);
+    }
+
+    TaskPromise(const TaskPromise&) = delete;
+    TaskPromise& operator=(const TaskPromise&) = delete;
+    TaskPromise(TaskPromise&&) noexcept = default;
+    TaskPromise& operator=(TaskPromise&&) noexcept = default;
+
+    V8ExecutionResult Wait() const {
+      if (cv_ == nullptr) return V8ExecutionResult{};
+
+      // make sure that suspended thread is notified
+      cv_->NotifyAll();
+
+      v8::base::MutexGuard guard(&tasks_mutex);
+      while (HasTaskSync(thread_id_)) {
+        cv_->Wait(&tasks_mutex);
+      }
+
+      return GetResultSync(thread_id_);
+    }
+
+   private:
+    std::string thread_id_;
+    shared_cv cv_ = nullptr;
+  };
+
   // Get and take ownership of task for the given thread_id
   static ThreadTask* ShowTask(const std::string& thread_id) {
     v8::base::MutexGuard lk(&tasks_mutex);
@@ -144,37 +173,19 @@ struct TaskExchange {
   }
 
   // Schedule a task with explicit thread context: source and destination
-  static bool ScheduleTask(const std::string& thread_src,
-                           const std::string& thread_dst,
-                           const std::string& req_type,
-                           std::string&& target_id,
-                           std::string&& member_id,
-                           std::string&& args_json,
-                           bool is_async) {
+  static TaskPromise ScheduleTask(const std::string& thread_src,
+                                  const std::string& thread_dst,
+                                  const std::string& req_type,
+                                  std::string&& target_id,
+                                  std::string&& member_id,
+                                  std::string&& args_json,
+                                  bool is_async) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto [it, inserted] = tasks.emplace(
         thread_dst, std::make_unique<ThreadTask>(ThreadTask{
                         thread_src, thread_dst, req_type, std::move(target_id),
                         std::move(member_id), std::move(args_json), is_async}));
-    return inserted;
-  }
-
-  static V8ExecutionResult WaitTaskProcession(const std::string& thread_id) {
-    auto cv = GetCV(thread_id);
-
-    // make sure that suspended thread is notified
-    cv->NotifyAll();
-
-    v8::base::MutexGuard guard(&tasks_mutex);
-    while (HasTaskSync(thread_id)) {
-      cv->Wait(&tasks_mutex);
-      if (g_sync_call) {
-        LogV8("WaitTaskProcession", "[>>> sync call detected <<<]");
-        g_sync_call = false;
-      }
-    }
-
-    return GetResultSync(thread_id);
+    return inserted ? TaskPromise(thread_dst) : TaskPromise();
   }
 
 private:
@@ -1942,11 +1953,11 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
   LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
 
   const std::string host_id = "host";
-  TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
-                             std::move(member_id), std::move(args_json),
-                             false); // TODO: is_async
+  auto promise = TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
+                                            std::move(member_id), std::move(args_json),
+                                            false); // TODO: is_async
   // TODO: should synchronize on thread_id properly
-  V8ExecutionResult result = TaskExchange::WaitTaskProcession(host_id);
+  V8ExecutionResult result = promise.Wait();
 
   LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
@@ -1965,10 +1976,10 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
         thread_dst, "target", target_id, "member", member_id, "is_async",
         is_async);
 
-  TaskExchange::ScheduleTask(thread_src, thread_dst, req_type,
-                             std::move(target_id), std::move(member_id),
-                             std::move(args_json), is_async);
-  V8ExecutionResult result = TaskExchange::WaitTaskProcession(thread_dst);
+  auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, req_type,
+                                            std::move(target_id), std::move(member_id),
+                                            std::move(args_json), is_async);
+  V8ExecutionResult result = promise.Wait();
   LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
 }
@@ -1999,9 +2010,9 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
     return V8ExecutionResult{};
   }
 
-  TaskExchange::ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
-                             std::move(member_id), std::move(args_json),
-                             is_async);
+  auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
+                                            std::move(member_id), std::move(args_json),
+                                            is_async);
 
   LogV8("runOnColdWorker.2/5", "[job created]");
 
@@ -2025,7 +2036,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
 
   LogV8("runOnColdWorker.4/5", "[phony task posted]");
 
-  V8ExecutionResult result = TaskExchange::WaitTaskProcession(thread_dst);
+  V8ExecutionResult result = promise.Wait();
   LogV8("runOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
 
   return result;
