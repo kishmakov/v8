@@ -244,6 +244,39 @@ struct ThreadStateManager {
     v8::base::MutexGuard g(&g_thread_state_mutex);
     g_thread_state.erase(id);
   }
+
+  static std::string DumpState() {
+    std::ostringstream out;
+    struct TryLocker {
+      v8::base::Mutex* mutex;
+      bool locked;
+      explicit TryLocker(v8::base::Mutex* m) : mutex(m), locked(m->TryLock()) {}
+      ~TryLocker() {
+        if (locked) mutex->Unlock();
+      }
+    };
+
+    TryLocker state_locker(&g_thread_state_mutex);
+    if (!state_locker.locked) {
+      out << "busy";
+      return out.str();
+    }
+
+    if (g_thread_state.empty()) {
+      out << "empty";
+      return out.str();
+    }
+
+    out << "{";
+    for (const auto& [thread_id, state] : g_thread_state) {
+      out << " [" << thread_id << "] depth=" << state.depth
+          << " resume_latched=" << (state.resume_latched ? "true" : "false");
+      out << " cv_refs=" << GetCV(thread_id).use_count();
+      out << "; ";
+    }
+    out << "}";
+    return out.str();
+  }
 };
 
 void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
@@ -1936,16 +1969,19 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
                                               std::string&& args_json) const {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedHost.1/2", "target", target_id, "member", member_id);
+  LogV8("runOnPausedHost.1/3", "target", target_id, "member", member_id);
 
   const std::string host_id = "host";
-  auto promise = TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
+  auto promise = TaskExchange::ScheduleTask(host_id, thread_id, "", std::move(target_id), // TODO: req_type
                                             std::move(member_id), std::move(args_json),
                                             false); // TODO: is_async
+
+  LogV8("runOnPausedHost.2/3", "TSM", ThreadStateManager::DumpState());
+
   // TODO: should synchronize on thread_id properly
   V8ExecutionResult result = promise.Wait();
 
-  LogV8("runOnPausedHost.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
+  LogV8("runOnPausedHost.3/3 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
 }
 
