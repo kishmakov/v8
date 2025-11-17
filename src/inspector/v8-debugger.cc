@@ -46,11 +46,6 @@ static const int kNoBreakpointId = 0;
 typedef std::shared_ptr<v8::base::ConditionVariable> shared_cv;
 
 std::mutex log_mutex; // should be global, because of usage in template function
-v8::base::ConditionVariable g_main_cv;
-
-v8::base::Mutex g_paused_mutex;
-std::unordered_set<std::string> g_resume_signals;
-std::unordered_map<std::string, int> g_pause_depth;
 
 v8::base::Mutex g_worker_map_mutex; // protect access to g_worker_* maps
 thread_local std::string t_worker_thread_id;
@@ -201,11 +196,55 @@ struct TaskExchange {
   }
 };
 
-int GetPauseDepthSync(const std::string& thread_id, const int delta = 0) {
-  auto [it, inserted] = g_pause_depth.try_emplace(thread_id, 0);
-  it->second = std::max(it->second + delta, 0);
-  return it->second;
-}
+struct ThreadPauseState {
+  int depth = 0;
+  bool resume_latched = false;  // resume requested while not paused
+};
+
+struct ThreadStateManager {
+  static inline v8::base::Mutex g_thread_state_mutex;
+  static inline std::unordered_map<std::string, ThreadPauseState> g_thread_state;
+
+  struct PauseToken {
+    bool skip_pause = false;  // when true => did not actually pause, consumed latch
+  };
+
+  static PauseToken EnterPause(const std::string& id) {
+    v8::base::MutexGuard g(&g_thread_state_mutex);
+    ThreadPauseState& s = g_thread_state[id];  // default constructed if absent
+    if (s.resume_latched) {
+      // resume was requested before pause started; consume and skip pausing.
+      s.resume_latched = false;
+      return PauseToken{.skip_pause = true};
+    }
+    ++s.depth;
+    return PauseToken{.skip_pause = false};
+  }
+
+  // Returns current depth after applying resume.
+  static int NoteResume(const std::string& id) {
+    v8::base::MutexGuard g(&g_thread_state_mutex);
+    ThreadPauseState& s = g_thread_state[id];
+    if (s.depth == 0) {
+      // No active pause: remember resume for the next EnterPause().
+      s.resume_latched = true;
+    } else {
+      // Wake one level of nesting.
+      s.depth = std::max(0, s.depth - 1);
+    }
+    return s.depth;
+  }
+
+  static int Depth(const std::string& id) {
+    v8::base::MutexGuard g(&g_thread_state_mutex);
+    return g_thread_state[id].depth;
+  }
+
+  static void Reset(const std::string& id) {
+    v8::base::MutexGuard g(&g_thread_state_mutex);
+    g_thread_state.erase(id);
+  }
+};
 
 void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
   v8::debug::SetBlackBoxPausesPolicy(isolate, true);
@@ -880,40 +919,24 @@ void V8Debugger::handleProgramBreak(
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
     LogV8("handleProgramBreak.1/3");
 
-    bool is_paused = false;
-    bool is_resumed = false;
-    {
-      v8::base::MutexGuard guard(&g_paused_mutex);
-      is_paused = GetPauseDepthSync(t_worker_thread_id) > 0;
-      is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0; // Consume the signal
-    }
-
-    if (is_resumed) {
-      LogV8("handleProgramBreak.3/3", "[resumed]");
-      return;
-    }
-
-    v8::Context::Scope scope(pausedContext);
-
-    if (!is_paused) { // run on cold
-        LogV8("handleProgramBreak.2/3", "[run on cold]");
-        processTaskOnStack();
-        ResetCurrentThread(m_isolate, &m_targetContextGroupId);
-        LogV8("handleProgramBreak.3/3", "[success]");
-        return;
-    }
-
-    auto cv = GetCV(t_worker_thread_id);
-
+    // Loop until all nested pauses for this thread are resumed.
     for (;;) {
+      // Process any pending task synchronously on this thread.
       {
-        v8::base::MutexGuard guard(&g_paused_mutex);
-        if (GetPauseDepthSync(t_worker_thread_id) == 0) break;
-        cv->Wait(&g_paused_mutex);
+        v8::HandleScope hs(m_isolate);
+        v8::Local<v8::Context> ctx = m_isolate->GetCurrentContext();
+        if (!ctx.IsEmpty()) {
+          v8::Context::Scope cs(ctx);
+          processTaskOnStack();
+        }
       }
 
-      LogV8("handleProgramBreak.2/3", "[run on warm]");
-      processTaskOnStack();
+      // Exit when no more pause depth is left for this thread.
+      if (ThreadStateManager::Depth(t_worker_thread_id) == 0) break;
+
+      // Park until resume or a new task arrives.
+      v8::base::MutexGuard guard(&ThreadStateManager::g_thread_state_mutex);
+      GetCV(t_worker_thread_id)->Wait(&ThreadStateManager::g_thread_state_mutex);
     }
 
     ResetCurrentThread(m_isolate, &m_targetContextGroupId);
@@ -1870,24 +1893,13 @@ void V8Debugger::pauseWorker(const std::string& id, const std::string& type, con
   LogV8("pauseWorker.1/4", "id", id, "type", type, "target", target_id);
 
   if (!enabled() || isPaused()) {
-    LogV8(isPaused() ? "pauseWorker.4/4 [skip already paused]" : "pauseWorker.4/4 [skip disabled]");
+    LogV8("pauseWorker.4/4", isPaused() ? "[skip already paused]" : "[skip disabled]");
     return;
   }
 
-  bool is_resumed = false;
-
-  {
-    v8::base::MutexGuard guard(&g_paused_mutex);
-    GetPauseDepthSync(t_worker_thread_id, 1);
-    is_resumed = g_resume_signals.erase(t_worker_thread_id) > 0;
-    if (!is_resumed) {
-      (void) GetCV(t_worker_thread_id);  // construct CV to avoid races with resume/runOnPaused
-    }
-  }
-
-  if (is_resumed) {
-    LogV8("pauseWorker.2/4", "[skip pause, process task directly]");
-    // Don't pause, but still process the task synchronously
+  ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(t_worker_thread_id);
+  if (token.skip_pause) {
+    LogV8("pauseWorker.2/4", "[skip pause due to pre-latched resume, process task]");
     v8::Context::Scope scope(m_isolate->GetCurrentContext());
     processTaskOnStack();
     LogV8("pauseWorker.4/4", "[task processed without pause]");
@@ -1895,15 +1907,12 @@ void V8Debugger::pauseWorker(const std::string& id, const std::string& type, con
   }
 
   LogV8("pauseWorker.2/4", "[preparing]");
-
   const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
   m_targetContextGroupId = m_inspector->contextGroupId(context_id);
   DCHECK(m_targetContextGroupId);
 
   LogV8("pauseWorker.3/4", "[before break requested]");
-
   PauseCurrentThreadRightNow(m_isolate);
-
   LogV8("pauseWorker.4/4", "[after break requested]");
 }
 
@@ -1912,24 +1921,10 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
 
   LogV8("resumeWorker.1/2", "for_thread", for_thread, "type", type, "target", target_id);
 
-  v8::Isolate* target_isolate = nullptr;
-  {
-    v8::base::MutexGuard lk(&g_worker_map_mutex);
-    auto it = g_worker_thread_isolates.find(for_thread);
-    if (it != g_worker_thread_isolates.end()) target_isolate = it->second;
-  }
+  // Apply resume to thread state (handles both paused and not-yet-paused cases).
+  ThreadStateManager::NoteResume(for_thread);
 
-  if (!target_isolate) {
-    LogV8("resumeWorker.2/2", "[failed to find isolate]");
-  }
-
-  {
-    v8::base::MutexGuard guard(&g_paused_mutex);
-    bool was_not_paused = 0 == GetPauseDepthSync(for_thread);
-    GetPauseDepthSync(for_thread, -1);
-    if (was_not_paused) g_resume_signals.insert(for_thread);
-  }
-
+  // Wake up any waiter on that thread's CV.
   GetCV(for_thread)->NotifyAll();
 
   LogV8("resumeWorker.2/2", "[signaled]");
@@ -1937,8 +1932,7 @@ void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& 
 
 int V8Debugger::getPauseDepth(const std::string& thread_id) const {
   if (!enabled()) return 0;
-  v8::base::MutexGuard guard(&g_paused_mutex);
-  int depth = GetPauseDepthSync(thread_id);
+  int depth = ThreadStateManager::Depth(thread_id);
   LogV8("getPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
   return depth;
 }
