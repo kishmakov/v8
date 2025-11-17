@@ -857,6 +857,7 @@ void V8Debugger::processTaskOnStack() const {
       "member", task->member_id, "is_async", task->is_async);
 
   v8::HandleScope handle_scope(m_isolate);
+  v8::Context::Scope context_scope(m_isolate->GetCurrentContext());
   const v8::TryCatch try_catch(m_isolate);
 
   v8::Local<v8::Context> v8_context = g_worker_contexts[t_worker_thread_id].Get(m_isolate).As<v8::Context>();;
@@ -922,14 +923,7 @@ void V8Debugger::handleProgramBreak(
     // Loop until all nested pauses for this thread are resumed.
     for (;;) {
       // Process any pending task synchronously on this thread.
-      {
-        v8::HandleScope hs(m_isolate);
-        v8::Local<v8::Context> ctx = m_isolate->GetCurrentContext();
-        if (!ctx.IsEmpty()) {
-          v8::Context::Scope cs(ctx);
-          processTaskOnStack();
-        }
-      }
+      processTaskOnStack();
 
       // Exit when no more pause depth is left for this thread.
       if (ThreadStateManager::Depth(t_worker_thread_id) == 0) break;
@@ -1900,7 +1894,6 @@ void V8Debugger::pauseWorker(const std::string& id, const std::string& type, con
   ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(t_worker_thread_id);
   if (token.skip_pause) {
     LogV8("pauseWorker.2/4", "[skip pause due to pre-latched resume, process task]");
-    v8::Context::Scope scope(m_isolate->GetCurrentContext());
     processTaskOnStack();
     LogV8("pauseWorker.4/4", "[task processed without pause]");
     return;
