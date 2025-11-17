@@ -927,6 +927,13 @@ void V8Debugger::processTaskOnStack() const {
 
   task->completed = true;
   GetCV(t_worker_thread_id)->NotifyAll();
+
+  // If there's a source thread waiting, resume it
+  if (!task->thread_src.empty() && task->thread_src != t_worker_thread_id) {
+    // Resume without extensive logging to avoid OOM
+    ThreadStateManager::NoteResume(task->thread_src);
+    GetCV(task->thread_src)->NotifyAll();
+  }
 }
 
 void V8Debugger::handleProgramBreak(
@@ -1966,22 +1973,41 @@ int V8Debugger::getPauseDepth(const std::string& thread_id) const {
 V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
                                               std::string&& target_id,
                                               std::string&& member_id,
-                                              std::string&& args_json) const {
+                                              std::string&& args_json) {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedHost.1/3", "target", target_id, "member", member_id);
+  LogV8("runOnPausedHost.1/4", "target", target_id, "member", member_id);
 
   const std::string host_id = "host";
-  auto promise = TaskExchange::ScheduleTask(host_id, thread_id, "", std::move(target_id), // TODO: req_type
+  auto promise = TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
                                             std::move(member_id), std::move(args_json),
                                             false); // TODO: is_async
 
-  LogV8("runOnPausedHost.2/3", "TSM", ThreadStateManager::DumpState());
+  // Notify the destination thread (host) in case it's waiting
+  GetCV(host_id)->NotifyAll();
 
-  // TODO: should synchronize on thread_id properly
+  LogV8("runOnPausedHost.2/4", "TSM", ThreadStateManager::DumpState());
+
+  // Pause the current thread (thread_id) using the debugger mechanism
+  // This allows the thread to process incoming tasks while waiting
+  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
+  m_targetContextGroupId = m_inspector->contextGroupId(context_id);
+  DCHECK(m_targetContextGroupId);
+
+  // Enter pause state for this thread
+  ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(thread_id);
+
+  if (!token.skip_pause) {
+    // Actually pause the thread - this will trigger handleProgramBreak
+    // The thread will stay paused until the task is completed and resumeWorker is called
+    PauseCurrentThreadRightNow(m_isolate);
+  }
+
+  // When we get here, the thread has been resumed (pause depth reached 0)
+  // The task should be completed now, retrieve the result
   V8ExecutionResult result = promise.Wait();
 
-  LogV8("runOnPausedHost.3/3 [computed]", "type", static_cast<int>(result.commTypeID));
+  LogV8("runOnPausedHost.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
   return result;
 }
 
@@ -1991,18 +2017,39 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
                                                 std::string&& target_id,
                                                 std::string&& member_id,
                                                 std::string&& args_json,
-                                                bool is_async) const {
+                                                bool is_async) {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedWorker.1/2", "thread_src", thread_src, "thread_dst",
-        thread_dst, "target", target_id, "member", member_id, "is_async",
-        is_async);
+  LogV8("runOnPausedWorker.1/4");
 
+  // Schedule the task on the destination thread
   auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, req_type,
                                             std::move(target_id), std::move(member_id),
                                             std::move(args_json), is_async);
+
+  // Notify the destination thread in case it's waiting
+  GetCV(thread_dst)->NotifyAll();
+
+  // Pause the current thread (thread_src) using the debugger mechanism
+  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
+  m_targetContextGroupId = m_inspector->contextGroupId(context_id);
+  DCHECK(m_targetContextGroupId);
+
+  // Enter pause state for this thread
+  ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(thread_src);
+
+  if (!token.skip_pause) {
+    // Actually pause the thread - this will trigger handleProgramBreak
+    // The thread will stay paused until resumeWorker is called by the task completion
+    PauseCurrentThreadRightNow(m_isolate);
+  }
+
+  // When we get here, the thread has been resumed (pause depth reached 0)
+  // The task should be completed now, retrieve the result
+  // Using Wait() here should return immediately since the task is already completed
   V8ExecutionResult result = promise.Wait();
-  LogV8("runOnPausedWorker.2/2 [computed]", "type", static_cast<int>(result.commTypeID));
+
+  LogV8("runOnPausedWorker.4/4");
   return result;
 }
 

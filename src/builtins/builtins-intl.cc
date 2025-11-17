@@ -1448,10 +1448,9 @@ BUILTIN(RegisterWorker) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
-
 BUILTIN(RunOnPaused) {
   int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " RunOnPaused.1/2";
+  BuiltinsLog().lock(my_counter) << " RunOnPaused.1/4";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1473,12 +1472,18 @@ BUILTIN(RunOnPaused) {
     << " str_args=" << str_args
     << std::endl;
 
+  if (!GetDebugger(v8_isolate)->enabled()) {
+    GetDebugger(v8_isolate)->enable();
+  }
+
+  // Schedule the task to be executed on the destination thread
+  BuiltinsLog().lock(my_counter) << " RunOnPaused.2/4 [scheduling task]" << std::endl;
   auto result = GetDebugger(v8_isolate)
                     ->runOnPausedWorker(
                         thread_src, thread_dst, req_type, std::move(target_id),
                         std::move(member_id), std::move(str_args), is_async);
 
-  BuiltinsLog().lock(my_counter) << " RunOnPaused.2/2"
+  BuiltinsLog().lock(my_counter) << " RunOnPaused.4/4"
     << " type=" << static_cast<int>(result.commTypeID)
     << " json=" << result.commJSON
     << std::endl;

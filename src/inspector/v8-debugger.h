@@ -115,14 +115,14 @@ class V8Debugger : public v8::debug::DebugDelegate,
   V8ExecutionResult runOnPausedHost(const std::string& thread_id,
                                     std::string&& target_id,
                                     std::string&& member_id,
-                                    std::string&& args_json) const;
+                                    std::string&& args_json);
   V8ExecutionResult runOnPausedWorker(const std::string& thread_src,
                                       const std::string& thread_dst,
                                       const std::string& req_type,
                                       std::string&& target_id,
                                       std::string&& member_id,
                                       std::string&& args_json,
-                                      bool is_async) const;
+                                      bool is_async);
   V8ExecutionResult runOnColdWorker(const std::string& thread_src,
                                     const std::string& thread_dst,
                                     const std::string& req_type,
