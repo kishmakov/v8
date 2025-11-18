@@ -111,6 +111,7 @@ void LogV8(const char* event, Args&&... args) {
 struct ThreadTask {
   const std::string thread_src;     // ID of the thread that sent this task
   const std::string thread_dst;     // ID of the thread that should execute this task
+  const std::string call_id;
 
   const std::string req_type;       // type for dispatching on JS side
   const std::string target_id;      // Target object or function
@@ -168,15 +169,16 @@ struct TaskExchange {
   // Schedule a task with explicit thread context: source and destination
   static TaskPromise ScheduleTask(const std::string& thread_src,
                                   const std::string& thread_dst,
+                                  const std::string& call_id,
                                   const std::string& req_type,
                                   std::string&& target_id,
                                   std::string&& member_id,
                                   std::string&& args_json, bool is_async) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto [it, inserted] = tasks.emplace(
-        thread_dst,
-        ThreadTask{thread_src, thread_dst, req_type, std::move(target_id),
-                   std::move(member_id), std::move(args_json), is_async});
+        thread_dst, ThreadTask{thread_src, thread_dst, call_id, req_type,
+                               std::move(target_id), std::move(member_id),
+                               std::move(args_json), is_async});
     return inserted ? TaskPromise(thread_dst) : TaskPromise();
   }
 
@@ -196,56 +198,99 @@ struct TaskExchange {
   }
 };
 
+void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
+  v8::debug::SetBlackBoxPausesPolicy(isolate, true);
+  const v8::debug::BreakReasons internal{v8::debug::BreakReason::kInternalWait};
+  v8::debug::BreakRightNow(isolate, internal);
+}
+
+std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  v8::HandleScope handle_scope(isolate);
+  if (!value->IsObject()) return "";
+  v8::Local<v8::Object> obj = value.As<v8::Object>();
+  v8::Local<v8::String> ctor = obj->GetConstructorName();
+  v8::String::Utf8Value utf8(isolate, ctor);
+  return *utf8 ? *utf8 : "";
+}
+
+std::string GetOptionalStr(v8::Isolate* isolate,
+                           const v8::Local<v8::Value> result_ser,
+                           const std::string& key_str) {
+  v8::Local<v8::String> key = v8::String::NewFromUtf8(isolate, key_str.c_str()).ToLocalChecked();
+
+  v8::Local<v8::Value> value;
+  const auto& context = isolate->GetCurrentContext();
+  if (!result_ser.As<v8::Object>()->Get(context, key).ToLocal(&value)) return "";
+  if (!value->IsString()) return "";
+
+  v8::String::Utf8Value utf8(isolate, value);
+  return *utf8;
+}
+
 struct ThreadPauseState {
   int depth = 0;
   bool resume_latched = false;  // resume requested while not paused
 };
 
 struct ThreadStateManager {
-  static inline v8::base::Mutex g_thread_state_mutex;
-  static inline std::unordered_map<std::string, ThreadPauseState> g_thread_state;
-
   struct PauseToken {
     bool skip_pause = false;  // when true => did not actually pause, consumed latch
   };
 
   static PauseToken EnterPause(const std::string& id) {
-    v8::base::MutexGuard g(&g_thread_state_mutex);
-    ThreadPauseState& s = g_thread_state[id];  // default constructed if absent
-    if (s.resume_latched) {
+    v8::base::MutexGuard g(&thread_state_mutex);
+    ThreadPauseState& state = thread_states[id];  // default constructed if absent
+    if (state.resume_latched) {
       // resume was requested before pause started; consume and skip pausing.
-      s.resume_latched = false;
+      state.resume_latched = false;
       return PauseToken{.skip_pause = true};
     }
-    ++s.depth;
+    ++state.depth;
     return PauseToken{.skip_pause = false};
   }
 
-  // Returns current depth after applying resume.
-  static int NoteResume(const std::string& id) {
-    v8::base::MutexGuard g(&g_thread_state_mutex);
-    ThreadPauseState& s = g_thread_state[id];
-    if (s.depth == 0) {
-      // No active pause: remember resume for the next EnterPause().
-      s.resume_latched = true;
+  // Apply resume to thread state (handles both paused and not-yet-paused cases).
+  static int NoteResume(const std::string& thread_id, const std::string& call_id) {
+    LogV8("NoteResume.1/1", "thread_id", thread_id, "call_id", call_id);
+
+    v8::base::MutexGuard guard(&thread_state_mutex);
+    ThreadPauseState& state = thread_states[thread_id];
+    if (state.depth == 0) {
+      // No active pause: remember resume for the next EnterPause
+      state.resume_latched = true;
     } else {
       // Wake one level of nesting.
-      s.depth = std::max(0, s.depth - 1);
+      state.depth = std::max(0, state.depth - 1);
     }
-    return s.depth;
+
+    // Wake up any waiter on that thread's CV.
+    GetCV(thread_id)->NotifyAll();
+    return state.depth;
   }
 
-  static int Depth(const std::string& id) {
-    v8::base::MutexGuard g(&g_thread_state_mutex);
-    return g_thread_state[id].depth;
+  static int Depth(const std::string& thread_id) {
+    v8::base::MutexGuard g(&thread_state_mutex);
+    return thread_states[thread_id].depth;
   }
 
-  static void Reset(const std::string& id) {
-    v8::base::MutexGuard g(&g_thread_state_mutex);
-    g_thread_state.erase(id);
+  static void PauseThreadForTask(v8::Isolate* isolate, const std::string& call_id) {
+    LogV8("PauseThreadForTask.1/3", "thread_id", t_worker_thread_id, "call_id", call_id);
+
+    PauseToken token = EnterPause(t_worker_thread_id);
+
+    if (token.skip_pause) {
+      LogV8("PauseThreadForTask.2/3", "[skip pause due to pre-latched resume, process task]");
+      ProcessTaskOnStack(isolate);
+      LogV8("PauseThreadForTask.3/3", "[task processed without pause]");
+      return;
+    }
+
+    LogV8("PauseThreadForTask.2/3", "[before PauseCurrentThreadRightNow]");
+    PauseCurrentThreadRightNow(isolate);
+    LogV8("PauseThreadForTask.3/3", "[after PauseCurrentThreadRightNow]");
   }
 
-  static std::string DumpState() {
+  static std::string DumpState() {  // TODO: improve after refactoring
     std::ostringstream out;
     struct TryLocker {
       v8::base::Mutex* mutex;
@@ -256,19 +301,19 @@ struct ThreadStateManager {
       }
     };
 
-    TryLocker state_locker(&g_thread_state_mutex);
+    TryLocker state_locker(&thread_state_mutex);
     if (!state_locker.locked) {
       out << "busy";
       return out.str();
     }
 
-    if (g_thread_state.empty()) {
+    if (thread_states.empty()) {
       out << "empty";
       return out.str();
     }
 
     out << "{";
-    for (const auto& [thread_id, state] : g_thread_state) {
+    for (const auto& [thread_id, state] : thread_states) {
       out << " [" << thread_id << "] depth=" << state.depth
           << " resume_latched=" << (state.resume_latched ? "true" : "false");
       out << " cv_refs=" << GetCV(thread_id).use_count();
@@ -277,18 +322,95 @@ struct ThreadStateManager {
     out << "}";
     return out.str();
   }
+
+  static void WaitAndProcessTasks(v8::Isolate* isolate, int* context_group) {
+    // Loop until all nested pauses for this thread are resumed.
+    for (;;) {
+      // Process any pending task synchronously on this thread.
+      ProcessTaskOnStack(isolate);
+
+      // Exit when no more pause depth is left for this thread.
+      if (Depth(t_worker_thread_id) == 0) break;
+
+      // Park until resume or a new task arrives.
+      v8::base::MutexGuard guard(&thread_state_mutex);
+      GetCV(t_worker_thread_id)->Wait(&thread_state_mutex);
+    }
+
+    v8::debug::SetBlackBoxPausesPolicy(isolate, false);
+    *context_group = 0;
+  }
+
+private:
+  static inline v8::base::Mutex thread_state_mutex;
+  static inline std::unordered_map<std::string, ThreadPauseState> thread_states;
+
+  static v8::Local<v8::Value> CppToV8(v8::Isolate* isolate, const std::string& value) {
+    if (value.empty()) return v8::Null(isolate);
+
+    return v8::String::NewFromUtf8(
+        isolate, value.c_str(), v8::NewStringType::kNormal, static_cast<int>(value.size())
+      ).ToLocalChecked();
+  }
+
+  static void ProcessTaskOnStack(v8::Isolate* isolate) {
+    ThreadTask* task = TaskExchange::ShowTask(t_worker_thread_id);
+
+    if (task == nullptr) {
+      LogV8("ProcessTaskOnStack.3/3", "[empty task]");
+      return;
+    }
+
+    LogV8("ProcessTaskOnStack.1/3", "target", task->target_id,
+        "member", task->member_id, "is_async", task->is_async);
+
+    v8::HandleScope handle_scope(isolate);
+    v8::Context::Scope context_scope(isolate->GetCurrentContext());
+    const v8::TryCatch try_catch(isolate);
+
+    v8::Local<v8::Context> v8_context = g_worker_contexts[t_worker_thread_id].Get(isolate).As<v8::Context>();;
+    v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_worker_thread_id].Get(isolate).As<v8::Value>();;
+
+    if (call_function_candidate->IsUndefined()) {
+      LogV8("ProcessTaskOnStack.3/3", "func_undefined");
+      GetCV(t_worker_thread_id)->NotifyAll();
+      return;
+    }
+
+    const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
+
+    const v8::Local<v8::Value> v8_req_type = CppToV8(isolate, task->req_type);
+    const v8::Local<v8::Value> v8_target = CppToV8(isolate, task->target_id);
+    const v8::Local<v8::Value> v8_member = CppToV8(isolate, task->member_id);
+    const v8::Local<v8::Value> v8_args = CppToV8(isolate, task->args_json);
+    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, task->is_async);
+
+    const std::string call_id = task->call_id;
+
+    constexpr size_t num_args = 5;
+    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async};
+
+    v8::MaybeLocal<v8::Value> call_result =
+      call_function->Call(v8_context, v8_context->Global(), num_args, argv);
+
+    if (try_catch.HasCaught() || call_result.IsEmpty()) {
+      v8::String::Utf8Value msg(isolate, try_catch.Exception());
+      LogV8("ProcessTaskOnStack.3/3", "failed with exception", *msg ? *msg : "<unknown>");
+    } else {
+      LogV8("ProcessTaskOnStack.2/3");
+      task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
+      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result.commTypeID));
+    }
+
+    task->completed = true;
+    GetCV(t_worker_thread_id)->NotifyAll();
+
+    // If there's a source thread waiting, resume it
+    if (!task->thread_src.empty() && task->thread_src != t_worker_thread_id) {
+      NoteResume(task->thread_src, call_id);
+    }
+  }
 };
-
-void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
-  v8::debug::SetBlackBoxPausesPolicy(isolate, true);
-  const v8::debug::BreakReasons internal{v8::debug::BreakReason::kInternalWait};
-  v8::debug::BreakRightNow(isolate, internal);
-}
-
-void ResetCurrentThread(v8::Isolate* isolate, int* context_group) {
-  v8::debug::SetBlackBoxPausesPolicy(isolate, false);
-  *context_group = 0;
-}
 
 #pragma clang diagnostic pop
 
@@ -770,41 +892,6 @@ void V8Debugger::clearContinueToLocation() {
   m_continueToLocationStack.reset();
 }
 
-namespace {
-
-v8::Local<v8::Value> cppToV8(v8::Isolate* isolate, const std::string& value) {
-  if (value.empty()) return v8::Null(isolate);
-
-  return v8::String::NewFromUtf8(
-      isolate, value.c_str(), v8::NewStringType::kNormal, static_cast<int>(value.size())
-    ).ToLocalChecked();
-}
-
-std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
-  v8::HandleScope handle_scope(isolate);
-  if (!value->IsObject()) return "";
-  v8::Local<v8::Object> obj = value.As<v8::Object>();
-  v8::Local<v8::String> ctor = obj->GetConstructorName();
-  v8::String::Utf8Value utf8(isolate, ctor);
-  return *utf8 ? *utf8 : "";
-}
-
-std::string GetOptionalStr(v8::Isolate* isolate,
-                           const v8::Local<v8::Value> result_ser,
-                           const std::string& key_str) {
-  v8::Local<v8::String> key = v8::String::NewFromUtf8(isolate, key_str.c_str()).ToLocalChecked();
-
-  v8::Local<v8::Value> value;
-  const auto& context = isolate->GetCurrentContext();
-  if (!result_ser.As<v8::Object>()->Get(context, key).ToLocal(&value)) return "";
-  if (!value->IsString()) return "";
-
-  v8::String::Utf8Value utf8(isolate, value);
-  return *utf8;
-}
-
-}  // namespace
-
 V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   if (value->IsUndefined()) return V8TypeID::Undefined;
   if (value->IsNull()) return V8TypeID::Null;
@@ -878,74 +965,13 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
   return result;
 }
 
-void V8Debugger::processTaskOnStack() const {
-  ThreadTask* task = TaskExchange::ShowTask(t_worker_thread_id);
-
-  if (task == nullptr) {
-    LogV8("processTaskOnStack.3/3", "[empty task]");
-    return;
-  }
-
-  LogV8("processTaskOnStack.1/3", "target", task->target_id,
-      "member", task->member_id, "is_async", task->is_async);
-
-  v8::HandleScope handle_scope(m_isolate);
-  v8::Context::Scope context_scope(m_isolate->GetCurrentContext());
-  const v8::TryCatch try_catch(m_isolate);
-
-  v8::Local<v8::Context> v8_context = g_worker_contexts[t_worker_thread_id].Get(m_isolate).As<v8::Context>();;
-  v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_worker_thread_id].Get(m_isolate).As<v8::Value>();;
-
-  if (call_function_candidate->IsUndefined()) {
-    LogV8("processTaskOnStack.3/3", "func_undefined");
-    GetCV(t_worker_thread_id)->NotifyAll();
-    return;
-  }
-
-  const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
-
-  const v8::Local<v8::Value> v8_req_type = cppToV8(m_isolate, task->req_type);
-  const v8::Local<v8::Value> v8_target = cppToV8(m_isolate, task->target_id);
-  const v8::Local<v8::Value> v8_member = cppToV8(m_isolate, task->member_id);
-  const v8::Local<v8::Value> v8_args = cppToV8(m_isolate, task->args_json);
-  const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(m_isolate, task->is_async);
-
-  constexpr size_t num_args = 5;
-  v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async};
-
-  v8::MaybeLocal<v8::Value> call_result =
-    call_function->Call(v8_context, v8_context->Global(), num_args, argv);
-
-  if (try_catch.HasCaught() || call_result.IsEmpty()) {
-    v8::String::Utf8Value msg(m_isolate, try_catch.Exception());
-    LogV8("processTaskOnStack.3/3", "failed with exception", *msg ? *msg : "<unknown>");
-  } else {
-    LogV8("processTaskOnStack.2/3");
-    task->result = V8SerializeResult(m_isolate, call_result.ToLocalChecked());
-    LogV8("processTaskOnStack.3/3", "type", static_cast<int>(task->result.commTypeID));
-  }
-
-  task->completed = true;
-  GetCV(t_worker_thread_id)->NotifyAll();
-
-  // If there's a source thread waiting, resume it
-  if (!task->thread_src.empty() && task->thread_src != t_worker_thread_id) {
-    // Resume without extensive logging to avoid OOM
-    ThreadStateManager::NoteResume(task->thread_src);
-    GetCV(task->thread_src)->NotifyAll();
-  }
-}
-
 void V8Debugger::handleProgramBreak(
     v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
     const std::vector<v8::debug::BreakpointId>& breakpointIds,
     v8::debug::BreakReasons breakReasons,
     v8::debug::ExceptionType exceptionType, bool isUncaught) {
   // Don't allow nested breaks.
-  LogV8("handleProgramBreak.0/3",
-    "break_internal", breakReasons.contains(v8::debug::BreakReason::kInternalWait),
-    "is_paused", isPaused()
-  );
+  LogV8("handleProgramBreak.0/2", "is_paused", isPaused());
 
   if (isPaused()) return;
 
@@ -958,23 +984,9 @@ void V8Debugger::handleProgramBreak(
   // We intentionally do not emit Debugger paused/resumed events.
   // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
-    LogV8("handleProgramBreak.1/3");
-
-    // Loop until all nested pauses for this thread are resumed.
-    for (;;) {
-      // Process any pending task synchronously on this thread.
-      processTaskOnStack();
-
-      // Exit when no more pause depth is left for this thread.
-      if (ThreadStateManager::Depth(t_worker_thread_id) == 0) break;
-
-      // Park until resume or a new task arrives.
-      v8::base::MutexGuard guard(&ThreadStateManager::g_thread_state_mutex);
-      GetCV(t_worker_thread_id)->Wait(&ThreadStateManager::g_thread_state_mutex);
-    }
-
-    ResetCurrentThread(m_isolate, &m_targetContextGroupId);
-    LogV8("handleProgramBreak.3/3", "[success]");
+    LogV8("handleProgramBreak.1/2", "[before WaitAndProcessTasks]");
+    ThreadStateManager::WaitAndProcessTasks(m_isolate, &m_targetContextGroupId);
+    LogV8("handleProgramBreak.2/2", "[after WaitAndProcessTasks]");
     return;
   }
 
@@ -1923,43 +1935,24 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-void V8Debugger::pauseWorker(const std::string& id, const std::string& type, const std::string& target_id) {
-  LogV8("pauseWorker.1/4", "id", id, "type", type, "target", target_id);
+void V8Debugger::pauseWorker(const std::string& call_id) const {
+  LogV8("pauseWorker.1/3", "call_id", call_id);
 
   if (!enabled() || isPaused()) {
-    LogV8("pauseWorker.4/4", isPaused() ? "[skip already paused]" : "[skip disabled]");
+    LogV8("pauseWorker.3/3", isPaused() ? "[skip already paused]" : "[skip disabled]");
     return;
   }
 
-  ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(t_worker_thread_id);
-  if (token.skip_pause) {
-    LogV8("pauseWorker.2/4", "[skip pause due to pre-latched resume, process task]");
-    processTaskOnStack();
-    LogV8("pauseWorker.4/4", "[task processed without pause]");
-    return;
-  }
-
-  LogV8("pauseWorker.2/4", "[preparing]");
-  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
-  m_targetContextGroupId = m_inspector->contextGroupId(context_id);
-  DCHECK(m_targetContextGroupId);
-
-  LogV8("pauseWorker.3/4", "[before break requested]");
-  PauseCurrentThreadRightNow(m_isolate);
-  LogV8("pauseWorker.4/4", "[after break requested]");
+  LogV8("pauseWorker.2/3", "[before PauseThreadForTask]");
+  ThreadStateManager::PauseThreadForTask(m_isolate, call_id);
+  LogV8("pauseWorker.3/3", "[after PauseThreadForTask]");
 }
 
-void V8Debugger::resumeWorker(const std::string& for_thread, const std::string& type, const std::string& target_id) const {
+void V8Debugger::resumeWorker(const std::string& thread_id, const std::string& call_id) const {
   if (!enabled()) return;
 
-  LogV8("resumeWorker.1/2", "for_thread", for_thread, "type", type, "target", target_id);
-
-  // Apply resume to thread state (handles both paused and not-yet-paused cases).
-  ThreadStateManager::NoteResume(for_thread);
-
-  // Wake up any waiter on that thread's CV.
-  GetCV(for_thread)->NotifyAll();
-
+  LogV8("resumeWorker.1/2", "thread_id", thread_id, "call_id", call_id);
+  ThreadStateManager::NoteResume(thread_id, call_id);
   LogV8("resumeWorker.2/2", "[signaled]");
 }
 
@@ -1979,9 +1972,11 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
   LogV8("runOnPausedHost.1/4", "target", target_id, "member", member_id);
 
   const std::string host_id = "host";
-  auto promise = TaskExchange::ScheduleTask(thread_id, host_id, "", std::move(target_id), // TODO: req_type
-                                            std::move(member_id), std::move(args_json),
-                                            false); // TODO: is_async
+  const std::string call_id = "mock_call_id";
+  auto promise = TaskExchange::ScheduleTask(
+      thread_id, host_id, call_id, "mock_req_type", std::move(target_id),
+      std::move(member_id), std::move(args_json),
+      false);  // TODO: call_id req_type is_async
 
   // Notify the destination thread (host) in case it's waiting
   GetCV(host_id)->NotifyAll();
@@ -2013,6 +2008,7 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
 
 V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
                                                 const std::string& thread_dst,
+                                                const std::string& call_id,
                                                 const std::string& req_type,
                                                 std::string&& target_id,
                                                 std::string&& member_id,
@@ -2020,23 +2016,23 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
                                                 bool is_async) {
   if (!enabled()) return V8ExecutionResult{};
 
-  LogV8("runOnPausedWorker.1/4");
+  LogV8("runOnPausedWorker.1/4", "thread_src", thread_src, "thread_dst", thread_dst,
+        "call_id", call_id, "req_type", req_type, "target_id", target_id, "member_id",
+        member_id, "is_async", is_async);
 
   // Schedule the task on the destination thread
-  auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, req_type,
+  auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, call_id, req_type,
                                             std::move(target_id), std::move(member_id),
                                             std::move(args_json), is_async);
 
   // Notify the destination thread in case it's waiting
   GetCV(thread_dst)->NotifyAll();
 
-  // Pause the current thread (thread_src) using the debugger mechanism
-  const int context_id = v8::debug::GetContextId(m_isolate->GetCurrentContext());
-  m_targetContextGroupId = m_inspector->contextGroupId(context_id);
-  DCHECK(m_targetContextGroupId);
-
   // Enter pause state for this thread
   ThreadStateManager::PauseToken token = ThreadStateManager::EnterPause(thread_src);
+  auto depth_src = ThreadStateManager::Depth(thread_src);
+  auto depth_dst = ThreadStateManager::Depth(thread_dst);
+  LogV8("runOnPausedWorker.2/4", "depth_src", depth_src, "depth_dst", depth_dst);
 
   if (!token.skip_pause) {
     // Actually pause the thread - this will trigger handleProgramBreak
@@ -2055,6 +2051,7 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
 
 V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
                                               const std::string& thread_dst,
+                                              const std::string& call_id,
                                               const std::string& req_type,
                                               std::string&& target_id,
                                               std::string&& member_id,
@@ -2079,9 +2076,9 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
     return V8ExecutionResult{};
   }
 
-  auto promise = TaskExchange::ScheduleTask(thread_src, thread_dst, req_type, std::move(target_id),
-                                            std::move(member_id), std::move(args_json),
-                                            is_async);
+  auto promise = TaskExchange::ScheduleTask(
+      thread_src, thread_dst, call_id, req_type, std::move(target_id),
+      std::move(member_id), std::move(args_json), is_async);
 
   LogV8("runOnColdWorker.2/5", "[job created]");
 

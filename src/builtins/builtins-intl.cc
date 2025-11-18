@@ -1245,17 +1245,18 @@ BUILTIN(ResumeCall) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  std::string target_id = IdToString(args, isolate, 2);
-  Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 3));
+  std::string call_id = IdToString(args, isolate, 2);
+  std::string target_id = IdToString(args, isolate, 3);
+  Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog() << " thread=" << thread_id << " id=" << result_ser.commResultID << std::endl;
+  BuiltinsLog() << " thread_id=" << thread_id << " result_id=" << result_ser.commResultID << std::endl;
 
   bool value_saved = ShelveValue(std::move(result_ser));
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   BuiltinsLog().lock(my_counter) << " ResumeCall.2/4" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, "call", target_id);
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id);
   BuiltinsLog().lock(my_counter) << " ResumeCall.3/4" << std::endl;
 
   auto result = value_saved
@@ -1307,10 +1308,15 @@ BUILTIN(WaitCall) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  std::string target_id = IdToString(args, isolate, 2);
-  std::string result_id = IdToString(args, isolate, 3);
+  std::string call_id = IdToString(args, isolate, 2);
+  std::string target_id = IdToString(args, isolate, 3);
+  std::string result_id = IdToString(args, isolate, 4);
 
-  BuiltinsLog() << " thread=" << thread_id << " result=" << result_id << " target=" << target_id << std::endl;
+  BuiltinsLog()
+    << " thread_id=" << thread_id
+    << " call_id=" << call_id
+    << " result_id=" << result_id
+    << " target_id=" << target_id << std::endl;
 
   if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
@@ -1320,7 +1326,7 @@ BUILTIN(WaitCall) {
 
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog().lock(my_counter) << " WaitCall.2/3" << std::endl;
-  GetDebugger(v8_isolate)->pauseWorker(result_id, "call", target_id);
+  GetDebugger(v8_isolate)->pauseWorker(call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
   Handle<Object> result = UnshelveValue(isolate, result_id);
@@ -1329,32 +1335,34 @@ BUILTIN(WaitCall) {
 }
 
 BUILTIN(PauseThread) {
-  int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " PauseThread.1/3";
-
-  HandleScope scope(isolate);
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  std::string thread_id = IdToString(args, isolate, 1);
-  std::string target_id = IdToString(args, isolate, 2);
-  std::string result_id = IdToString(args, isolate, 3);
-
-  BuiltinsLog() << " thread=" << thread_id << " result=" << result_id << " target=" << target_id << std::endl;
-
-  if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
-
-  if (!GetDebugger(v8_isolate)->enabled()) {
-    GetDebugger(v8_isolate)->enable();
-  }
-
-  // Initiate internal silent wait pause via V8Debugger.
-  BuiltinsLog().lock(my_counter) << " PauseThread.2/3" << std::endl;
-  GetDebugger(v8_isolate)->pauseWorker(result_id, "call", target_id);
-
-  BuiltinsLog().lock(my_counter) << " PauseThread.3/3";
-  Handle<Object> result = UnshelveValue(isolate, result_id);
-  BuiltinsLog() << std::endl;
-  return *result;
+  // TODO: remove if not used
+  // int my_counter = ++counter;
+  // BuiltinsLog().lock(my_counter) << " PauseThread.1/3";
+  //
+  // HandleScope scope(isolate);
+  // v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  //
+  // std::string thread_id = IdToString(args, isolate, 1);
+  // std::string target_id = IdToString(args, isolate, 2);
+  // std::string result_id = IdToString(args, isolate, 3);
+  //
+  // BuiltinsLog() << " thread=" << thread_id << " result=" << result_id << " target=" << target_id << std::endl;
+  //
+  // if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
+  //
+  // if (!GetDebugger(v8_isolate)->enabled()) {
+  //   GetDebugger(v8_isolate)->enable();
+  // }
+  //
+  // // Initiate internal silent wait pause via V8Debugger.
+  // BuiltinsLog().lock(my_counter) << " PauseThread.2/3" << std::endl;
+  // GetDebugger(v8_isolate)->pauseWorker(result_id, "call", target_id);
+  //
+  // BuiltinsLog().lock(my_counter) << " PauseThread.3/3";
+  // Handle<Object> result = UnshelveValue(isolate, result_id);
+  // BuiltinsLog() << std::endl;
+  // return *result;
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 BUILTIN(WaitType) {
@@ -1369,9 +1377,9 @@ BUILTIN(WaitType) {
   std::string call_id = IdToString(args, isolate, 3);
 
   BuiltinsLog()
-    << " callId=" << call_id
-    << " thread=" << thread_id
-    << " target=" << target_id
+    << " call_id=" << call_id
+    << " thread_id=" << thread_id
+    << " target_id=" << target_id
     << std::endl;
   if (target_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
@@ -1382,7 +1390,7 @@ BUILTIN(WaitType) {
   // Pause using the debugger (same path as WaitCall): triggers BreakRightNow
   // with kInternalWait and updates g_paused_thread_ids for this worker.
   BuiltinsLog().lock(my_counter) << " WaitType.2/3" << std::endl;
-  GetDebugger(v8_isolate)->pauseWorker(target_id, "type", target_id);
+  GetDebugger(v8_isolate)->pauseWorker(call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitType.3/3";
   Handle<Object> result = UnshelveValue(isolate, target_id);
@@ -1404,16 +1412,16 @@ BUILTIN(ResumeType) {
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog()
-    << " callId=" << call_id
-    << " thread=" << thread_id
-    << " id=" << result_ser.commResultID << std::endl;
+    << " call_id=" << call_id
+    << " thread_id=" << thread_id
+    << " result_id=" << result_ser.commResultID << std::endl;
 
   bool value_saved = ShelveValue(std::move(result_ser));
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   // Resume the paused thread via debugger (same path as ResumeCall).
   BuiltinsLog().lock(my_counter) << " ResumeType.2/3" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, "type", target_id);
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id);
   BuiltinsLog().lock(my_counter) << " ResumeType.3/3" << std::endl;
 
   return ReadOnlyRoots(isolate).undefined_value();
@@ -1478,10 +1486,11 @@ BUILTIN(RunOnPaused) {
 
   // Schedule the task to be executed on the destination thread
   BuiltinsLog().lock(my_counter) << " RunOnPaused.2/4 [scheduling task]" << std::endl;
-  auto result = GetDebugger(v8_isolate)
-                    ->runOnPausedWorker(
-                        thread_src, thread_dst, req_type, std::move(target_id),
-                        std::move(member_id), std::move(str_args), is_async);
+  auto result =
+      GetDebugger(v8_isolate)
+          ->runOnPausedWorker(thread_src, thread_dst, "mock_call_id", req_type,
+                              std::move(target_id), std::move(member_id),
+                              std::move(str_args), is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnPaused.4/4"
     << " type=" << static_cast<int>(result.commTypeID)
@@ -1516,10 +1525,11 @@ BUILTIN(RunOnCold) {
     << " str_args=" << str_args
     << std::endl;
 
-  auto result = GetDebugger(v8_isolate)
-                    ->runOnColdWorker(
-                        thread_src, thread_dst,  req_type, std::move(target_id),
-                        std::move(member_id), std::move(str_args), is_async);
+  auto result =
+      GetDebugger(v8_isolate)
+          ->runOnColdWorker(thread_src, thread_dst, "mock_call_id", req_type,
+                            std::move(target_id), std::move(member_id),
+                            std::move(str_args), is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnCold.2/2"
     << " type=" << static_cast<int>(result.commTypeID)

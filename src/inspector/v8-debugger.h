@@ -108,8 +108,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  void pauseWorker(const std::string& id, const std::string& type, const std::string& target_id);
-  void resumeWorker(const std::string& for_thread, const std::string& type, const std::string& target_id) const;
+  void pauseWorker(const std::string& call_id) const;
+  void resumeWorker(const std::string& for_thread, const std::string& call_id) const;
   int getPauseDepth(const std::string& thread_id) const;
 
   V8ExecutionResult runOnPausedHost(const std::string& thread_id,
@@ -118,6 +118,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                                     std::string&& args_json);
   V8ExecutionResult runOnPausedWorker(const std::string& thread_src,
                                       const std::string& thread_dst,
+                                      const std::string& call_id,
                                       const std::string& req_type,
                                       std::string&& target_id,
                                       std::string&& member_id,
@@ -125,6 +126,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                                       bool is_async);
   V8ExecutionResult runOnColdWorker(const std::string& thread_src,
                                     const std::string& thread_dst,
+                                    const std::string& call_id,
                                     const std::string& req_type,
                                     std::string&& target_id,
                                     std::string&& member_id,
@@ -222,7 +224,6 @@ class V8Debugger : public v8::debug::DebugDelegate,
       v8::Isolate* isolate, void*);
   void installTerminateExecutionCallbacks(v8::Local<v8::Context> context);
 
-  void processTaskOnStack() const;
   void handleProgramBreak(
       v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
       const std::vector<v8::debug::BreakpointId>& hitBreakpoints,
