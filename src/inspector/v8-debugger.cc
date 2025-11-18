@@ -192,36 +192,6 @@ class PokeTask : public v8::Task {
 
 class ThreadStateManager {
  public:
-  // Promise-like ticket returned to the caller to wait for completion.
-  struct TaskPromise {
-    TaskPromise() = default;
-    explicit TaskPromise(std::string id) : thread_id_(std::move(id)) {
-      if (!thread_id_.empty()) cv_ = GetCV(thread_id_);
-    }
-
-    TaskPromise(const TaskPromise&) = delete;
-    TaskPromise& operator=(const TaskPromise&) = delete;
-    TaskPromise(TaskPromise&&) noexcept = default;
-    TaskPromise& operator=(TaskPromise&&) noexcept = default;
-
-    V8ExecutionResult Wait() const {
-      if (cv_ == nullptr) return V8ExecutionResult{};
-
-      // make sure that suspended thread is notified
-      cv_->NotifyAll();
-
-      v8::base::MutexGuard guard(&tasks_mutex);
-      while (HasTaskSync(thread_id_)) {
-        cv_->Wait(&tasks_mutex);
-      }
-
-      return GetResultSync(thread_id_);
-    }
-
-   private:
-    std::string thread_id_;
-    shared_cv cv_ = nullptr;
-  };
 
   struct PauseToken {
     bool skip_pause = false;  // when true => did not actually pause, consumed latch
@@ -279,38 +249,19 @@ class ThreadStateManager {
 
     const std::string host_id = "host";
     const std::string call_id = "mock_call_id";
-    auto promise = ScheduleTask(
-        thread_id, host_id, call_id, "mock_req_type", std::move(target_id),
-        std::move(member_id), std::move(args_json),
-        false);  // TODO: call_id req_type is_async
+    ScheduleTask(thread_id, host_id, call_id, "mock_req_type", std::move(target_id),
+                 std::move(member_id), std::move(args_json),
+                 false);  // TODO: call_id req_type is_async
 
     // Notify the destination thread (host) in case it's waiting
     GetCV(host_id)->NotifyAll();
 
     LogV8("runOnPausedHost.2/4", "TSM", DumpState());
 
-    // Pause the current thread (thread_id) using the debugger mechanism
-    // This allows the thread to process incoming tasks while waiting
-    // Note: context group ID handling is done in V8Debugger::runOnPausedHost currently,
-    // but the core pause logic is here.
-    // The caller (V8Debugger) is responsible for setting up m_targetContextGroupId if needed
-    // before calling this, or we can pass it.
-    // For now, we assume the caller handles the side effects on V8Debugger state if any,
-    // but the pause mechanism is self-contained.
+    // Wait for task completion using V8 pause mechanism
+    WaitForTask(isolate, host_id);
 
-    // Enter pause state for this thread
-    PauseToken token = EnterPause(thread_id);
-
-    if (!token.skip_pause) {
-      // Actually pause the thread - this will trigger handleProgramBreak
-      // The thread will stay paused until the task is completed and resumeWorker is called
-      PauseCurrentThreadRightNow(isolate);
-    }
-
-    // When we get here, the thread has been resumed (pause depth reached 0)
-    // The task should be completed now, retrieve the result
-    V8ExecutionResult result = promise.Wait();
-
+    V8ExecutionResult result = RetrieveResult(host_id);
     LogV8("runOnPausedHost.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
     return result;
   }
@@ -328,30 +279,18 @@ class ThreadStateManager {
           member_id, "is_async", is_async);
 
     // Schedule the task on the destination thread
-    auto promise = ScheduleTask(thread_src, thread_dst, call_id, req_type,
-                                              std::move(target_id), std::move(member_id),
-                                              std::move(args_json), is_async);
+    ScheduleTask(thread_src, thread_dst, call_id, req_type,
+                 std::move(target_id), std::move(member_id),
+                 std::move(args_json), is_async);
 
     // Notify the destination thread in case it's waiting
     GetCV(thread_dst)->NotifyAll();
 
-    // Enter pause state for this thread
-    PauseToken token = EnterPause(thread_src);
-    auto depth_src = Depth(thread_src);
-    auto depth_dst = Depth(thread_dst);
-    LogV8("runOnPausedWorker.2/4", "depth_src", depth_src, "depth_dst", depth_dst);
+    // Wait for task completion using V8 pause mechanism
+    LogV8("runOnPausedWorker.2/4", "waiting for task");
+    WaitForTask(isolate, thread_dst);
 
-    if (!token.skip_pause) {
-      // Actually pause the thread - this will trigger handleProgramBreak
-      // The thread will stay paused until resumeWorker is called by the task completion
-      PauseCurrentThreadRightNow(isolate);
-    }
-
-    // When we get here, the thread has been resumed (pause depth reached 0)
-    // The task should be completed now, retrieve the result
-    // Using Wait() here should return immediately since the task is already completed
-    V8ExecutionResult result = promise.Wait();
-
+    V8ExecutionResult result = RetrieveResult(thread_dst);
     LogV8("runOnPausedWorker.4/4");
     return result;
   }
@@ -381,9 +320,8 @@ class ThreadStateManager {
       return V8ExecutionResult{};
     }
 
-    auto promise = ScheduleTask(
-        thread_src, thread_dst, call_id, req_type, std::move(target_id),
-        std::move(member_id), std::move(args_json), is_async);
+    ScheduleTask(thread_src, thread_dst, call_id, req_type, std::move(target_id),
+                 std::move(member_id), std::move(args_json), is_async);
 
     LogV8("runOnColdWorker.2/5", "[job created]");
 
@@ -404,7 +342,11 @@ class ThreadStateManager {
 
     LogV8("runOnColdWorker.4/5", "[phony task posted]");
 
-    V8ExecutionResult result = promise.Wait();
+    // Wait for task completion using V8 pause mechanism
+    // This allows the caller (if it's a worker) to process incoming tasks while waiting
+    WaitForTask(isolate, thread_dst);
+
+    V8ExecutionResult result = RetrieveResult(thread_dst);
     LogV8("runOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
 
     return result;
@@ -548,7 +490,7 @@ class ThreadStateManager {
     return result;
   }
 
-  static TaskPromise ScheduleTask(const std::string& thread_src,
+  static void ScheduleTask(const std::string& thread_src,
                                   const std::string& thread_dst,
                                   const std::string& call_id,
                                   const std::string& req_type,
@@ -556,11 +498,30 @@ class ThreadStateManager {
                                   std::string&& member_id,
                                   std::string&& args_json, bool is_async) {
     v8::base::MutexGuard lk(&tasks_mutex);
-    auto [it, inserted] = tasks.emplace(
+    tasks.emplace(
         thread_dst, ThreadTask{thread_src, thread_dst, call_id, req_type,
                                std::move(target_id), std::move(member_id),
                                std::move(args_json), is_async});
-    return inserted ? TaskPromise(thread_dst) : TaskPromise();
+  }
+
+  static bool IsTaskCompleted(const std::string& thread_dst) {
+    v8::base::MutexGuard lk(&tasks_mutex);
+    auto it = tasks.find(thread_dst);
+    return it != tasks.end() && it->second.completed;
+  }
+
+  static V8ExecutionResult RetrieveResult(const std::string& thread_dst) {
+    v8::base::MutexGuard lk(&tasks_mutex);
+    return GetResultSync(thread_dst);
+  }
+
+  static void WaitForTask(v8::Isolate* isolate, const std::string& thread_dst) {
+    while (!IsTaskCompleted(thread_dst)) {
+      PauseToken token = EnterPause(t_worker_thread_id);
+      if (!token.skip_pause) {
+        PauseCurrentThreadRightNow(isolate);
+      }
+    }
   }
 
   static v8::Local<v8::Value> CppToV8(v8::Isolate* isolate, const std::string& value) {
