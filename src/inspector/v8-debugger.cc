@@ -193,9 +193,7 @@ class PokeTask : public v8::Task {
 class ThreadStateManager {
  public:
 
-  struct PauseToken {
-    bool skip_pause = false;  // when true => did not actually pause, consumed latch
-  };
+
 
   static void RegisterWorkerThread(v8::Isolate* isolate, const std::string& thread_id, v8::Local<v8::Value> func) {
     LogV8("RegisterWorkerThread.1/2", "thread", thread_id);
@@ -352,16 +350,16 @@ class ThreadStateManager {
     return result;
   }
 
-  static PauseToken EnterPause(const std::string& id) {
+  static bool EnterPause(const std::string& id) {
     v8::base::MutexGuard g(&thread_state_mutex);
     ThreadPauseState& state = thread_states[id];  // default constructed if absent
     if (state.resume_latched) {
       // resume was requested before pause started; consume and skip pausing.
       state.resume_latched = false;
-      return PauseToken{.skip_pause = true};
+      return false;
     }
     ++state.depth;
-    return PauseToken{.skip_pause = false};
+    return true;
   }
 
   // Apply resume to thread state (handles both paused and not-yet-paused cases).
@@ -391,9 +389,7 @@ class ThreadStateManager {
   static void PauseThreadForTask(v8::Isolate* isolate, const std::string& call_id) {
     LogV8("PauseThreadForTask.1/3", "thread_id", t_worker_thread_id, "call_id", call_id);
 
-    PauseToken token = EnterPause(t_worker_thread_id);
-
-    if (token.skip_pause) {
+    if (!EnterPause(t_worker_thread_id)) {
       LogV8("PauseThreadForTask.2/3", "[skip pause due to pre-latched resume, process task]");
       ProcessTaskOnStack(isolate);
       LogV8("PauseThreadForTask.3/3", "[task processed without pause]");
@@ -517,8 +513,7 @@ class ThreadStateManager {
 
   static void WaitForTask(v8::Isolate* isolate, const std::string& thread_dst) {
     while (!IsTaskCompleted(thread_dst)) {
-      PauseToken token = EnterPause(t_worker_thread_id);
-      if (!token.skip_pause) {
+      if (EnterPause(t_worker_thread_id)) {
         PauseCurrentThreadRightNow(isolate);
       }
     }
