@@ -1465,16 +1465,18 @@ BUILTIN(RunOnPaused) {
 
   std::string thread_src = IdToString(args, isolate, 1);
   std::string thread_dst = IdToString(args, isolate, 2);
+  std::string call_id = IdToString(args, isolate, 3);
 
-  std::string req_type = IdToString(args, isolate, 3);
+  std::string req_type = IdToString(args, isolate, 4);
 
-  std::string target_id = IdToString(args, isolate, 4);
-  std::string member_id = IdToString(args, isolate, 5);
-  std::string str_args = IdToString(args, isolate, 6);
-  bool is_async = IdToBool(args, isolate, 7);
+  std::string target_id = IdToString(args, isolate, 5);
+  std::string member_id = IdToString(args, isolate, 6);
+  std::string str_args = IdToString(args, isolate, 7);
+  bool is_async = IdToBool(args, isolate, 8);
 
   BuiltinsLog()
     << " " << thread_src << "->" << thread_dst
+    << " call_id=" << call_id
     << " target=" << target_id
     << " member=" << member_id
     << " str_args=" << str_args
@@ -1488,7 +1490,7 @@ BUILTIN(RunOnPaused) {
   BuiltinsLog().lock(my_counter) << " RunOnPaused.2/4 [scheduling task]" << std::endl;
   auto result =
       GetDebugger(v8_isolate)
-          ->runOnPausedWorker(thread_src, thread_dst, "mock_call_id", req_type,
+          ->runOnPausedWorker(thread_src, thread_dst, call_id, req_type,
                               std::move(target_id), std::move(member_id),
                               std::move(str_args), is_async);
 
