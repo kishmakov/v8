@@ -198,7 +198,7 @@ class ThreadStateManager {
   };
 
   static void RegisterWorkerThread(v8::Isolate* isolate, const std::string& thread_id, v8::Local<v8::Value> func) {
-    LogV8("registerWorkerThread.1/2", "thread", thread_id);
+    LogV8("RegisterWorkerThread.1/2", "thread", thread_id);
 
     v8::base::MutexGuard lk(&g_worker_map_mutex);
     t_worker_thread_id = thread_id;
@@ -208,36 +208,36 @@ class ThreadStateManager {
     g_worker_contexts[thread_id].Reset(isolate, isolate->GetCurrentContext());
 
     if (func.IsEmpty() || !func->IsFunction()) {
-      LogV8("registerWorkerThread.2/2", "[failed to locate function]");
+      LogV8("RegisterWorkerThread.2/2", "[failed to locate function]");
       return;
     }
 
     g_worker_funcs[thread_id].Reset(isolate, func.As<v8::Function>());
 
-    LogV8("registerWorkerThread.2/2", "[success]");
+    LogV8("RegisterWorkerThread.2/2", "[success]");
   }
 
   static void PauseWorker(v8::Isolate* isolate, const std::string& call_id) {
-    LogV8("pauseWorker.1/3", "call_id", call_id);
+    LogV8("PauseWorker.1/3", "call_id", call_id);
 
     // Note: enabled() check should be done by caller if needed, or passed in.
     // Assuming caller checks enabled() before calling if strict adherence is required,
     // but here we focus on the mechanism.
 
-    LogV8("pauseWorker.2/3", "[before PauseThreadForTask]");
+    LogV8("PauseWorker.2/3", "[before PauseThreadForTask]");
     PauseThreadForTask(isolate, call_id);
-    LogV8("pauseWorker.3/3", "[after PauseThreadForTask]");
+    LogV8("PauseWorker.3/3", "[after PauseThreadForTask]");
   }
 
   static void ResumeWorker(const std::string& thread_id, const std::string& call_id) {
-    LogV8("resumeWorker.1/2", "thread_id", thread_id, "call_id", call_id);
+    LogV8("ResumeWorker.1/2", "thread_id", thread_id, "call_id", call_id);
     NoteResume(thread_id, call_id);
-    LogV8("resumeWorker.2/2", "[signaled]");
+    LogV8("ResumeWorker.2/2", "[signaled]");
   }
 
   static int GetPauseDepth(const std::string& thread_id) {
     int depth = Depth(thread_id);
-    LogV8("getPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
+    LogV8("GetPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
     return depth;
   }
 
@@ -245,7 +245,7 @@ class ThreadStateManager {
                                            std::string&& target_id,
                                            std::string&& member_id,
                                            std::string&& args_json) {
-    LogV8("runOnPausedHost.1/4", "target", target_id, "member", member_id);
+    LogV8("RunOnPausedHost.1/3", "target", target_id, "member", member_id);
 
     const std::string host_id = "host";
     const std::string call_id = "mock_call_id";
@@ -256,13 +256,13 @@ class ThreadStateManager {
     // Notify the destination thread (host) in case it's waiting
     GetCV(host_id)->NotifyAll();
 
-    LogV8("runOnPausedHost.2/4", "TSM", DumpState());
+    LogV8("RunOnPausedHost.2/3", "TSM", DumpState());
 
     // Wait for task completion using V8 pause mechanism
     WaitForTask(isolate, host_id);
 
     V8ExecutionResult result = RetrieveResult(host_id);
-    LogV8("runOnPausedHost.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
+    LogV8("RunOnPausedHost.3/3 [computed]", "type", static_cast<int>(result.commTypeID));
     return result;
   }
 
@@ -274,7 +274,7 @@ class ThreadStateManager {
                                              std::string&& member_id,
                                              std::string&& args_json,
                                              bool is_async) {
-    LogV8("runOnPausedWorker.1/4", "thread_src", thread_src, "thread_dst", thread_dst,
+    LogV8("RunOnPausedWorker.1/3", "thread_src", thread_src, "thread_dst", thread_dst,
           "call_id", call_id, "req_type", req_type, "target_id", target_id, "member_id",
           member_id, "is_async", is_async);
 
@@ -287,11 +287,11 @@ class ThreadStateManager {
     GetCV(thread_dst)->NotifyAll();
 
     // Wait for task completion using V8 pause mechanism
-    LogV8("runOnPausedWorker.2/4", "waiting for task");
+    LogV8("RunOnPausedWorker.2/3", "waiting for task");
     WaitForTask(isolate, thread_dst);
 
     V8ExecutionResult result = RetrieveResult(thread_dst);
-    LogV8("runOnPausedWorker.4/4");
+    LogV8("RunOnPausedWorker.3/3");
     return result;
   }
 
@@ -303,7 +303,7 @@ class ThreadStateManager {
                                            std::string&& member_id,
                                            std::string&& args_json,
                                            bool is_async) {
-    LogV8("runOnColdWorker.1/5", "thread_src", thread_src, "thread_dst",
+    LogV8("RunOnColdWorker.1/5", "thread_src", thread_src, "thread_dst",
           thread_dst, "target", target_id, "member", member_id, "is_async",
           is_async);
 
@@ -316,38 +316,38 @@ class ThreadStateManager {
     }
 
     if (!target_isolate) {
-      LogV8("runOnColdWorker.5/5", "[failed to find isolate]");
+      LogV8("RunOnColdWorker.5/5", "[failed to find isolate]");
       return V8ExecutionResult{};
     }
 
     ScheduleTask(thread_src, thread_dst, call_id, req_type, std::move(target_id),
                  std::move(member_id), std::move(args_json), is_async);
 
-    LogV8("runOnColdWorker.2/5", "[job created]");
+    LogV8("RunOnColdWorker.2/5", "[job created]");
 
     // schedule interrupt on the worker's isolate to execute the task
     target_isolate->RequestInterrupt(
         [](v8::Isolate* isolate, void* /*data*/) {
-          LogV8("runOnColdWorker", "[interruption requested]");
+          LogV8("RunOnColdWorker", "[interruption requested]");
           PauseCurrentThreadRightNow(isolate);
         },
         nullptr);
 
-    LogV8("runOnColdWorker.3/5", "[debugger enabled]");
+    LogV8("RunOnColdWorker.3/5", "[debugger enabled]");
 
     // force post cold worker thread to run a foreground poke task
     auto* platform = v8::debug::GetCurrentPlatform();
     auto runner = platform->GetForegroundTaskRunner(target_isolate);
     runner->PostTask(std::make_unique<PokeTask>(target_isolate));
 
-    LogV8("runOnColdWorker.4/5", "[phony task posted]");
+    LogV8("RunOnColdWorker.4/5", "[phony task posted]");
 
     // Wait for task completion using V8 pause mechanism
     // This allows the caller (if it's a worker) to process incoming tasks while waiting
     WaitForTask(isolate, thread_dst);
 
     V8ExecutionResult result = RetrieveResult(thread_dst);
-    LogV8("runOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
+    LogV8("RunOnColdWorker.5/5", "type", static_cast<int>(result.commTypeID));
 
     return result;
   }
