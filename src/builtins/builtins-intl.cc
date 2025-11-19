@@ -1290,7 +1290,7 @@ BUILTIN(SyncCall) {
   if (target_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   BuiltinsLog().lock(my_counter) << " SyncCall.2/3" << std::endl;
-  auto result = GetDebugger(v8_isolate)->runOnPausedHost(thread_id, std::move(target_id), std::move(member_id), std::move(args_json));
+  auto result = GetDebugger(v8_isolate)->runOnPausedHost(thread_id, result_id, "w2h:call", std::move(target_id), std::move(member_id), std::move(args_json));
 
   BuiltinsLog().lock(my_counter) << " SyncCall.3/3"
     << " type=" << static_cast<int>(result.commTypeID)

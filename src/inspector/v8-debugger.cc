@@ -234,16 +234,17 @@ class ThreadStateManager {
   }
 
   static V8ExecutionResult RunOnPausedHost(v8::Isolate* isolate, const std::string& thread_id,
+                                           const std::string& call_id,
+                                           const std::string& req_type,
                                            std::string&& target_id,
                                            std::string&& member_id,
                                            std::string&& args_json) {
     LogV8("RunOnPausedHost.1/3", "target", target_id, "member", member_id);
 
     const std::string host_id = "host";
-    const std::string call_id = "mock_call_id";
-    ScheduleTask(thread_id, host_id, call_id, "mock_req_type", std::move(target_id),
+    ScheduleTask(thread_id, host_id, call_id, req_type, std::move(target_id),
                  std::move(member_id), std::move(args_json),
-                 false);  // TODO: call_id req_type is_async
+                 false);  // TODO: is_async
 
     // Notify the destination thread (host) in case it's waiting
     GetCV(host_id)->NotifyAll();
@@ -2088,6 +2089,8 @@ int V8Debugger::getPauseDepth(const std::string& thread_id) const {
 }
 
 V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
+                                              const std::string& call_id,
+                                              const std::string& req_type,
                                               std::string&& target_id,
                                               std::string&& member_id,
                                               std::string&& args_json) {
@@ -2097,8 +2100,9 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
   m_targetContextGroupId = m_inspector->contextGroupId(context_id);
   DCHECK(m_targetContextGroupId);
 
-  return ThreadStateManager::RunOnPausedHost(m_isolate, thread_id, std::move(target_id),
-                                             std::move(member_id), std::move(args_json));
+  return ThreadStateManager::RunOnPausedHost(m_isolate, thread_id, call_id, req_type,
+                                             std::move(target_id), std::move(member_id),
+                                             std::move(args_json));
 }
 
 V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,

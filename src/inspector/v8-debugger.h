@@ -113,6 +113,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   int getPauseDepth(const std::string& thread_id) const;
 
   V8ExecutionResult runOnPausedHost(const std::string& thread_id,
+                                    const std::string& call_id,
+                                    const std::string& req_type,
                                     std::string&& target_id,
                                     std::string&& member_id,
                                     std::string&& args_json);
