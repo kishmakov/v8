@@ -233,12 +233,6 @@ class ThreadStateManager {
     LogV8("ResumeWorker.2/2", "[signaled]");
   }
 
-  static int GetPauseDepth(const std::string& thread_id) {
-    int depth = Depth(thread_id);
-    LogV8("GetPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
-    return depth;
-  }
-
   static V8ExecutionResult RunOnPausedHost(v8::Isolate* isolate, const std::string& thread_id,
                                            std::string&& target_id,
                                            std::string&& member_id,
@@ -437,7 +431,7 @@ class ThreadStateManager {
   static void InPauseDispatch(v8::Isolate* isolate, int* context_group) {
     // Loop until all nested pauses for this thread are resumed.
     for (;;) {
-      if (HasTask(t_worker_thread_id)) ProcessTaskOnStack(isolate);
+      if (CheckTaskStatus(t_worker_thread_id, false)) ProcessTaskOnStack(isolate);
       if (Depth(t_worker_thread_id) == 0) break;
 
       // park until next task or resume
@@ -467,14 +461,10 @@ class ThreadStateManager {
     return it == tasks.end() ? nullptr : &it->second;
   }
 
-  static bool HasTask(const std::string& thread_id) {
+  static bool CheckTaskStatus(const std::string& thread_id, bool is_completed) {
     v8::base::MutexGuard lk(&tasks_mutex);
-    return HasTaskSync(thread_id);
-  }
-
-  static bool HasTaskSync(const std::string& thread_id) {
     auto it = tasks.find(thread_id);
-    return it != tasks.end() && !it->second.completed;
+    return it != tasks.end() && it->second.completed == is_completed;
   }
 
   static V8ExecutionResult GetResultSync(const std::string& thread_id) {
@@ -500,11 +490,7 @@ class ThreadStateManager {
                                std::move(args_json), is_async});
   }
 
-  static bool IsTaskCompleted(const std::string& thread_dst) {
-    v8::base::MutexGuard lk(&tasks_mutex);
-    auto it = tasks.find(thread_dst);
-    return it != tasks.end() && it->second.completed;
-  }
+
 
   static V8ExecutionResult RetrieveResult(const std::string& thread_dst) {
     v8::base::MutexGuard lk(&tasks_mutex);
@@ -512,7 +498,7 @@ class ThreadStateManager {
   }
 
   static void WaitForTask(v8::Isolate* isolate, const std::string& thread_dst) {
-    while (!IsTaskCompleted(thread_dst)) {
+    while (!CheckTaskStatus(thread_dst, true)) {
       if (EnterPause(t_worker_thread_id)) {
         PauseCurrentThreadRightNow(isolate);
       }
@@ -2096,7 +2082,9 @@ void V8Debugger::resumeWorker(const std::string& thread_id, const std::string& c
 
 int V8Debugger::getPauseDepth(const std::string& thread_id) const {
   if (!enabled()) return 0;
-  return ThreadStateManager::GetPauseDepth(thread_id);
+  int depth = ThreadStateManager::Depth(thread_id);
+  LogV8("getPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
+  return depth;
 }
 
 V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
