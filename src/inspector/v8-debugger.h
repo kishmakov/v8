@@ -117,7 +117,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                                     const std::string& req_type,
                                     std::string&& target_id,
                                     std::string&& member_id,
-                                    std::string&& args_json);
+                                    std::string&& args_json) const;
   V8ExecutionResult runOnPausedWorker(const std::string& thread_src,
                                       const std::string& thread_dst,
                                       const std::string& call_id,
