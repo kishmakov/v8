@@ -1101,14 +1101,12 @@ LockableStream& BuiltinsLog() {
   return *active;
 }
 
+int counter = 0;
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 
-std::unordered_map<std::string, v8_inspector::V8ExecutionResult> idToResult;
 
-int counter = 0;
-
-#pragma clang diagnostic pop
 
 inline v8_inspector::V8Debugger* GetDebugger(v8::Isolate* isolate) {
   auto* inspector = debug::GetInspector(isolate); // TODO: what if null?
@@ -1213,27 +1211,28 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
 }
 
 // true if value was serialized
-bool ShelveValue(v8_inspector::V8ExecutionResult&& res) {
-  int typeCode = static_cast<int>(res.commTypeID);
-  BuiltinsLog() << " type=" << typeCode;
-  if (!res.commJSON.empty()) BuiltinsLog() << " json=" << res.commJSON;
-  auto key = res.commResultID;  // copy to keep value inside res
-  idToResult.emplace(std::move(key), std::move(res));
-  return typeCode < 100;
-}
+// bool ShelveValue(v8_inspector::V8ExecutionResult&& res) {
+//   int typeCode = static_cast<int>(res.commTypeID);
+//   BuiltinsLog() << " type=" << typeCode;
+//   if (!res.commJSON.empty()) BuiltinsLog() << " json=" << res.commJSON;
+//   auto key = res.commResultID;  // copy to keep value inside res
+//   idToResult.emplace(std::move(key), std::move(res));
+//   return typeCode < 100;
+// }
 
-Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
-  if (idToResult.count(id) == 0) {
-    BuiltinsLog() << " failed to locate id=" << id;
-    return Handle<Object>(ReadOnlyRoots(isolate).undefined_value(), isolate);
-  }
+// Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
+//   if (idToResult.count(id) == 0) {
+//     BuiltinsLog() << " failed to locate id=" << id;
+//     return Handle<Object>(ReadOnlyRoots(isolate).undefined_value(), isolate);
+//   }
 
-  auto& res = idToResult[id];
-  BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.commProto;
-  Handle<Object> result = DeserializeResult(isolate, res);
-  idToResult.erase(id);
-  return result;
-}
+//   auto& res = idToResult[id];
+//   BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.commProto;
+//   Handle<Object> result = DeserializeResult(isolate, res);
+//   idToResult.erase(id);
+//   return result;
+// }
+
 
 } // namespace
 
@@ -1252,11 +1251,12 @@ BUILTIN(ResumeCall) {
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog() << " thread_id=" << thread_id << " result_id=" << result_ser.commResultID << std::endl;
 
-  bool value_saved = ShelveValue(std::move(result_ser));
+  // bool value_saved = ShelveValue(std::move(result_ser));
+  bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   BuiltinsLog().lock(my_counter) << " ResumeCall.2/4" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id);
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_ser));
   BuiltinsLog().lock(my_counter) << " ResumeCall.3/4" << std::endl;
 
   auto result = value_saved
@@ -1326,10 +1326,10 @@ BUILTIN(WaitCall) {
 
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog().lock(my_counter) << " WaitCall.2/3" << std::endl;
-  GetDebugger(v8_isolate)->pauseWorker(call_id);
+  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
-  Handle<Object> result = UnshelveValue(isolate, result_id);
+  Handle<Object> result = DeserializeResult(isolate, result_struct);
   BuiltinsLog() << std::endl;
   return *result;
 }
@@ -1390,10 +1390,10 @@ BUILTIN(WaitType) {
   // Pause using the debugger (same path as WaitCall): triggers BreakRightNow
   // with kInternalWait and updates g_paused_thread_ids for this worker.
   BuiltinsLog().lock(my_counter) << " WaitType.2/3" << std::endl;
-  GetDebugger(v8_isolate)->pauseWorker(call_id);
+  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitType.3/3";
-  Handle<Object> result = UnshelveValue(isolate, target_id);
+  Handle<Object> result = DeserializeResult(isolate, result_struct);
   BuiltinsLog() << std::endl;
   return *result;
 }
@@ -1416,12 +1416,13 @@ BUILTIN(ResumeType) {
     << " thread_id=" << thread_id
     << " result_id=" << result_ser.commResultID << std::endl;
 
-  bool value_saved = ShelveValue(std::move(result_ser));
+  // bool value_saved = ShelveValue(std::move(result_ser));
+  bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
   BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   // Resume the paused thread via debugger (same path as ResumeCall).
   BuiltinsLog().lock(my_counter) << " ResumeType.2/3" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id);
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_ser));
   BuiltinsLog().lock(my_counter) << " ResumeType.3/3" << std::endl;
 
   return ReadOnlyRoots(isolate).undefined_value();
