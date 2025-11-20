@@ -8,6 +8,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 #include "include/v8-container.h"
@@ -159,8 +160,8 @@ struct ThreadTask {
 };
 
 struct ThreadPauseState {
-  int depth = 0;
-  bool resume_latched = false;  // resume requested while not paused
+  std::vector<std::string> pause_call_ids;  // Stack of call_ids that caused pauses
+  std::optional<std::string> resume_call_id;  // call_id for which resume was requested
 };
 
 class PokeTask : public v8::Task {
@@ -221,16 +222,24 @@ class ThreadStateManager {
   static std::string DumpState() {
     v8::base::MutexGuard lk(&thread_state_mutex);
     std::stringstream ss;
-    ss << "<";
+    char sep = '{';
     for (const auto& [thread_id, state] : thread_states) {
-      ss << thread_id << "->";
-      if (auto it = waiting_for.find(thread_id); it != waiting_for.end()) {
-        ss << "call_id=" << it->second << ":";
+      ss << sep << thread_id << "->";
+      sep = ':';
+
+      if (state.resume_call_id.has_value()) {
+        ss << "(" << state.resume_call_id.value() << ")";
+      }
+
+      if (state.pause_call_ids.empty()) {
+        ss << "free";
       } else {
-        ss << "free:";
+        for (const auto& call_id : state.pause_call_ids) {
+          ss << "[" << call_id << "]";
+        }
       }
     }
-    ss << ">";
+    ss << "}";
     return ss.str();
   }
 
@@ -289,7 +298,7 @@ class ThreadStateManager {
   }
 
   static void ResumeWorker(const std::string& thread_id, const std::string& call_id, V8ExecutionResult&& result) {
-    LogV8("ResumeWorker.1/2", "thread_id", thread_id, "call_id", call_id);
+    LogV8("ResumeWorker.1/2", "thread_id", thread_id, "call_id", call_id, "TSM", DumpState());
 
     // Store result in a task marked as completed
     {
@@ -305,7 +314,7 @@ class ThreadStateManager {
     }
 
     NoteResume(thread_id, call_id);
-    LogV8("ResumeWorker.2/2", "[signaled]");
+    LogV8("ResumeWorker.2/2 [signaled]", "TSM", DumpState());
   }
 
   static V8ExecutionResult RunOnPausedHost(v8::Isolate* isolate, const std::string& thread_id,
@@ -420,14 +429,17 @@ class ThreadStateManager {
     return result;
   }
 
-  static bool EnterPause(const std::string& thread_id) {
+  static bool EnterPause(const std::string& thread_id, const std::string& call_id) {
     v8::base::MutexGuard g(&thread_state_mutex);
     ThreadPauseState& state = thread_states[thread_id];
-    if (state.resume_latched) {
-      state.resume_latched = false;
-      return false;
+    if (state.resume_call_id.has_value()) {
+      // Resume was requested before pause - consume it if it matches
+      if (state.resume_call_id.value() == call_id) {
+        state.resume_call_id.reset();
+        return false;
+      }
     }
-    ++state.depth;
+    state.pause_call_ids.push_back(call_id);
     return true;
   }
 
@@ -437,26 +449,30 @@ class ThreadStateManager {
 
     v8::base::MutexGuard guard(&thread_state_mutex);
     ThreadPauseState& state = thread_states[thread_id];
-    if (state.depth == 0) {
-      state.resume_latched = true;
+    if (state.pause_call_ids.empty()) {
+      // Resume requested before pause - store for later
+      state.resume_call_id = call_id;
     } else {
-      state.depth = std::max(0, state.depth - 1);
+      // Pop the matching pause from the stack
+      if (!state.pause_call_ids.empty() && state.pause_call_ids.back() == call_id) {
+        state.pause_call_ids.pop_back();
+      }
     }
 
     // Wake up any waiter on that thread's CV.
     GetCV(thread_id)->NotifyAll();
-    return state.depth;
+    return static_cast<int>(state.pause_call_ids.size());
   }
 
   static int Depth(const std::string& thread_id) {
     v8::base::MutexGuard g(&thread_state_mutex);
-    return thread_states[thread_id].depth;
+    return static_cast<int>(thread_states[thread_id].pause_call_ids.size());
   }
 
   static void PauseThreadForTask(v8::Isolate* isolate, const std::string& call_id) {
     LogV8("PauseThreadForTask.1/3", "thread_id", t_worker_thread_id, "call_id", call_id);
 
-    if (!EnterPause(t_worker_thread_id)) {
+    if (!EnterPause(t_worker_thread_id, call_id)) {
       LogV8("PauseThreadForTask.2/3", "[skip pause due to pre-latched resume, process task]");
       ProcessTaskOnStack(isolate);
       LogV8("PauseThreadForTask.3/3", "[task processed without pause]");
@@ -547,7 +563,7 @@ class ThreadStateManager {
     WaitingScope waiting(t_worker_thread_id, call_id);
 
     while (!CheckTaskStatus(thread_dst, true)) {
-      if (EnterPause(t_worker_thread_id)) {
+      if (EnterPause(t_worker_thread_id, call_id)) {
         PauseCurrentThreadRightNow(isolate);
       }
     }
