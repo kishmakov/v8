@@ -64,11 +64,19 @@ shared_cv GetCV(const std::string& id) {
 struct PairPrinter {
   std::ostream& log;
   void operator()() const {}
+
+  template <typename K, typename... Rest>
+  void operator()(K&& k, const std::string& v, Rest&&... rest) const {
+    log << ' ' << k << '=' << (v.empty() ? "<failed: empty id>" : v);
+    (*this)(std::forward<Rest>(rest)...);
+  }
+
   template <typename K, typename V, typename... Rest>
   void operator()(K&& k, V&& v, Rest&&... rest) const {
     log << ' ' << k << '=' << v;
     (*this)(std::forward<Rest>(rest)...);
   }
+
   template <typename K>
   void operator()(K&& k) const { log << ' ' << k; }
 };
@@ -213,6 +221,7 @@ class ThreadStateManager {
   static std::string DumpState() {
     v8::base::MutexGuard lk(&thread_state_mutex);
     std::stringstream ss;
+    ss << "<";
     for (const auto& [thread_id, state] : thread_states) {
       ss << thread_id << "->";
       if (auto it = waiting_for.find(thread_id); it != waiting_for.end()) {
@@ -221,6 +230,7 @@ class ThreadStateManager {
         ss << "free:";
       }
     }
+    ss << ">";
     return ss.str();
   }
 
@@ -234,21 +244,20 @@ class ThreadStateManager {
 
     {
       v8::base::MutexGuard guard(&g_worker_map_mutex);
-    t_worker_thread_id = thread_id;
-    v8::HandleScope handle_scope(isolate);
+      t_worker_thread_id = thread_id;
+      v8::HandleScope handle_scope(isolate);
 
-    g_worker_thread_isolates[thread_id] = isolate;
-    g_worker_contexts[thread_id].Reset(isolate, isolate->GetCurrentContext());
+      g_worker_thread_isolates[thread_id] = isolate;
+      g_worker_contexts[thread_id].Reset(isolate, isolate->GetCurrentContext());
 
-    if (func.IsEmpty() || !func->IsFunction()) {
-      LogV8("RegisterWorkerThread.2/2", "[failed to locate function]");
-      return;
+      if (func.IsEmpty() || !func->IsFunction()) {
+        LogV8("RegisterWorkerThread.2/2", "[failed to locate function]");
+        return;
+      }
+
+      g_worker_funcs[thread_id].Reset(isolate, func.As<v8::Function>());
+      LogV8("RegisterWorkerThread.2/2", "[success]");
     }
-
-    g_worker_funcs[thread_id].Reset(isolate, func.As<v8::Function>());
-
-    LogV8("RegisterWorkerThread.2/2", "[success]");
-  }
   }
 
   static V8ExecutionResult PauseWorker(v8::Isolate* isolate, const std::string& call_id) {
