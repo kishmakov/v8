@@ -198,7 +198,7 @@ class ThreadStateManager {
 
   struct WaitingScope {
     std::string thread_id;
-    WaitingScope(const std::string& t, const std::string& c) : thread_id(t) {
+    WaitingScope(const std::string& thread, const std::string& c) : thread_id(thread) {
       v8::base::MutexGuard lk(&thread_state_mutex);
       waiting_for[thread_id] = c;
     }
@@ -225,7 +225,7 @@ class ThreadStateManager {
   }
 
   static void RegisterWorkerThread(v8::Isolate* isolate, const std::string& thread_id, v8::Local<v8::Value> func) {
-    LogV8("RegisterWorkerThread.1/2", "thread", thread_id);
+    LogV8("RegisterWorkerThread.1/2", "thread_id", thread_id);
 
     {
       v8::base::MutexGuard guard(&thread_state_mutex);
@@ -261,7 +261,7 @@ class ThreadStateManager {
     // but here we focus on the mechanism.
 
     LogV8("PauseWorker.2/3", "[before PauseThreadForTask]");
-    
+
     while (true) {
       // Check if we have a completed task with result for this call_id
       {
@@ -274,14 +274,14 @@ class ThreadStateManager {
           return result;
         }
       }
-      
+
       PauseThreadForTask(isolate, call_id);
     }
   }
 
   static void ResumeWorker(const std::string& thread_id, const std::string& call_id, V8ExecutionResult&& result) {
     LogV8("ResumeWorker.1/2", "thread_id", thread_id, "call_id", call_id);
-    
+
     // Store result in a task marked as completed
     {
       v8::base::MutexGuard lk(&tasks_mutex);
@@ -294,7 +294,7 @@ class ThreadStateManager {
           std::move(result)
       });
     }
-    
+
     NoteResume(thread_id, call_id);
     LogV8("ResumeWorker.2/2", "[signaled]");
   }
@@ -346,7 +346,7 @@ class ThreadStateManager {
     GetCV(thread_dst)->NotifyAll();
 
     // Wait for task completion using V8 pause mechanism
-    LogV8("RunOnPausedWorker.2/3", "waiting for task");
+    LogV8("RunOnPausedWorker.2/3 [waiting for task]");
     WaitForTask(isolate, thread_dst);
 
     V8ExecutionResult result = RetrieveResult(thread_dst);
@@ -413,9 +413,8 @@ class ThreadStateManager {
 
   static bool EnterPause(const std::string& thread_id) {
     v8::base::MutexGuard g(&thread_state_mutex);
-    ThreadPauseState& state = thread_states[thread_id];  // default constructed if absent
+    ThreadPauseState& state = thread_states[thread_id];
     if (state.resume_latched) {
-      // resume was requested before pause started; consume and skip pausing.
       state.resume_latched = false;
       return false;
     }
@@ -430,10 +429,8 @@ class ThreadStateManager {
     v8::base::MutexGuard guard(&thread_state_mutex);
     ThreadPauseState& state = thread_states[thread_id];
     if (state.depth == 0) {
-      // No active pause: remember resume for the next EnterPause
       state.resume_latched = true;
     } else {
-      // Wake one level of nesting.
       state.depth = std::max(0, state.depth - 1);
     }
 
@@ -605,12 +602,12 @@ class ThreadStateManager {
       LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result.commTypeID));
     }
 
+    auto thread_id = task->thread_src;
     task->completed = true;
     GetCV(t_worker_thread_id)->NotifyAll();
 
-    // If there's a source thread waiting, resume it
-    if (!task->thread_src.empty() && task->thread_src != t_worker_thread_id) {
-      NoteResume(task->thread_src, call_id);
+    if (!thread_id.empty() && thread_id != t_worker_thread_id) {
+      NoteResume(thread_id, call_id);
     }
   }
 };
