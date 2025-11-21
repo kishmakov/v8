@@ -143,27 +143,6 @@ std::string GetOptionalStr(v8::Isolate* isolate,
   return *utf8;
 }
 
-// Bidirectional task exchange structure with per-thread ownership
-struct ThreadTask {
-  const std::string thread_src;     // ID of the thread that sent this task
-  const std::string thread_dst;     // ID of the thread that should execute this task
-  const std::string call_id;
-
-  const std::string req_type;       // type for dispatching on JS side
-  const std::string target_id;      // Target object or function
-  const std::string member_id;      // Member/method to call
-  const std::string args_json;      // JSON-encoded arguments
-  const bool is_async;              // Whether this is an async task
-
-  bool completed = false;           // Whether the task has been completed
-  V8ExecutionResult result{};       // Result of task execution
-};
-
-struct ThreadPauseState {
-  std::vector<std::string> pause_call_ids;  // Stack of call_ids that caused pauses
-  std::optional<std::string> resume_call_id;  // call_id for which resume was requested
-};
-
 class PokeTask : public v8::Task {
  public:
   explicit PokeTask(v8::Isolate* isolate) : isolate_(isolate) {}
@@ -199,6 +178,59 @@ class PokeTask : public v8::Task {
   v8::Isolate* isolate_;
 };
 
+struct ThreadTaskArguments {
+  std::string target_id;   // Target object or function
+  std::string member_id;   // Member/method to call
+  std::string args_json;   // JSON-encoded arguments (raw JSON string)
+  bool is_async;           // Whether this is an async task
+
+  static std::string escape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (char c : in) {
+      switch (c) {
+        case '\"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out += c; break;
+      }
+    }
+    return out;
+  }
+
+  std::string toJSON() const {
+    // args_json is assumed to be a valid JSON fragment; embed raw when it looks like JSON.
+    bool raw_args = !args_json.empty() &&
+                    (args_json.front() == '{' || args_json.front() == '[');
+    return std::string("{\"target_id\":\"") + escape(target_id) +
+           "\",\"member_id\":\"" + escape(member_id) +
+           "\",\"args_json\":" + (raw_args ? args_json : ("\"" + escape(args_json) + "\"")) +
+           ",\"is_async\":" + (is_async ? "true" : "false") + "}";
+  }
+};
+
+inline std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& a) {
+  return os << a.toJSON();
+}
+
+struct ThreadTask {
+  const std::string thread_src;     // ID of the thread that sent this task
+  const std::string thread_dst;     // ID of the thread that should execute this task
+  const std::string call_id;
+  const std::string req_type;       // Request type
+
+  std::optional<ThreadTaskArguments> args;
+
+  bool completed = false;           // Whether the task has been completed
+  V8ExecutionResult result{};       // Result of task execution
+};
+
+struct ThreadPauseState {
+  std::vector<std::string> pause_call_ids;  // Stack of call_ids that caused pauses
+  std::optional<std::string> resume_call_id;  // call_id for which resume was requested
+};
 
 class ThreadStateManager {
   static inline v8::base::Mutex thread_state_mutex;
@@ -307,7 +339,8 @@ class ThreadStateManager {
       // for the specific call_id the thread is waiting for.
       tasks.erase(thread_id);
       tasks.emplace(thread_id, ThreadTask{
-          "", thread_id, call_id, "", "", "", "", false, // Empty request fields
+          "", thread_id, call_id, "", // Empty req_type for completed result-only task
+          std::nullopt, // No args needed for completed result-only task
           true, // completed
           std::move(result)
       });
@@ -320,15 +353,11 @@ class ThreadStateManager {
   static V8ExecutionResult RunOnPausedHost(v8::Isolate* isolate, const std::string& thread_id,
                                            const std::string& call_id,
                                            const std::string& req_type,
-                                           std::string&& target_id,
-                                           std::string&& member_id,
-                                           std::string&& args_json) {
-    LogV8("RunOnPausedHost.1/3", "target", target_id, "member", member_id);
+                                           ThreadTaskArguments&& args) {
+    LogV8("RunOnPausedHost.1/3", "args", args);
 
     const std::string host_id = "host";
-    ScheduleTask(thread_id, host_id, call_id, req_type, std::move(target_id),
-                 std::move(member_id), std::move(args_json),
-                 false);  // TODO: is_async
+    ScheduleTask(thread_id, host_id, call_id, req_type, std::move(args));
 
     // Notify the destination thread (host) in case it's waiting
     GetCV(host_id)->NotifyAll();
@@ -357,8 +386,8 @@ class ThreadStateManager {
 
     // Schedule the task on the destination thread
     ScheduleTask(thread_src, thread_dst, call_id, req_type,
-                 std::move(target_id), std::move(member_id),
-                 std::move(args_json), is_async);
+                 ThreadTaskArguments{std::move(target_id), std::move(member_id),
+                                     std::move(args_json), is_async});
 
     // Notify the destination thread in case it's waiting
     GetCV(thread_dst)->NotifyAll();
@@ -397,8 +426,9 @@ class ThreadStateManager {
       return V8ExecutionResult{};
     }
 
-    ScheduleTask(thread_src, thread_dst, call_id, req_type, std::move(target_id),
-                 std::move(member_id), std::move(args_json), is_async);
+    ScheduleTask(thread_src, thread_dst, call_id, req_type,
+                 ThreadTaskArguments{std::move(target_id), std::move(member_id),
+                                     std::move(args_json), is_async});
 
     LogV8("RunOnColdWorker.2/5", "[job created]");
 
@@ -536,17 +566,11 @@ class ThreadStateManager {
                                   const std::string& thread_dst,
                                   const std::string& call_id,
                                   const std::string& req_type,
-                                  std::string&& target_id,
-                                  std::string&& member_id,
-                                  std::string&& args_json, bool is_async) {
+                                  ThreadTaskArguments&& args) {
     v8::base::MutexGuard lk(&tasks_mutex);
-    tasks.emplace(
-        thread_dst, ThreadTask{thread_src, thread_dst, call_id, req_type,
-                               std::move(target_id), std::move(member_id),
-                               std::move(args_json), is_async});
+    tasks.emplace(thread_dst,
+                  ThreadTask{thread_src, thread_dst, call_id, req_type, args});
   }
-
-
 
   static V8ExecutionResult RetrieveResult(const std::string& thread_dst) {
     v8::base::MutexGuard lk(&tasks_mutex);
@@ -586,8 +610,14 @@ class ThreadStateManager {
       return;
     }
 
-    LogV8("ProcessTaskOnStack.1/3", "target", task->target_id,
-        "member", task->member_id, "is_async", task->is_async);
+    if (!task->args.has_value()) {
+      LogV8("ProcessTaskOnStack.3/3", "[no args]");
+      return;
+    }
+
+    const ThreadTaskArguments& args = task->args.value();
+    LogV8("ProcessTaskOnStack.1/3", "target", args.target_id,
+        "member", args.member_id, "is_async", args.is_async);
 
     v8::HandleScope handle_scope(isolate);
     v8::Context::Scope context_scope(isolate->GetCurrentContext());
@@ -605,10 +635,10 @@ class ThreadStateManager {
     const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
 
     const v8::Local<v8::Value> v8_req_type = CppToV8(isolate, task->req_type);
-    const v8::Local<v8::Value> v8_target = CppToV8(isolate, task->target_id);
-    const v8::Local<v8::Value> v8_member = CppToV8(isolate, task->member_id);
-    const v8::Local<v8::Value> v8_args = CppToV8(isolate, task->args_json);
-    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, task->is_async);
+    const v8::Local<v8::Value> v8_target = CppToV8(isolate, args.target_id);
+    const v8::Local<v8::Value> v8_member = CppToV8(isolate, args.member_id);
+    const v8::Local<v8::Value> v8_args = CppToV8(isolate, args.args_json);
+    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
 
     const std::string call_id = task->call_id;
 
@@ -2160,9 +2190,11 @@ V8ExecutionResult V8Debugger::runOnPausedHost(const std::string& thread_id,
   if (!enabled()) return result;
 
   LogV8("runOnPausedHost.1/2 [before RunOnPausedHost]", "call_id", call_id, "TSM", ThreadStateManager::DumpState());
-  result = ThreadStateManager::RunOnPausedHost(
-      m_isolate, thread_id, call_id, req_type, std::move(target_id),
-      std::move(member_id), std::move(args_json));
+  ThreadTaskArguments args{std::move(target_id), std::move(member_id),
+                           std::move(args_json), false}; // TODO: is_async
+
+  result = ThreadStateManager::RunOnPausedHost(m_isolate, thread_id, call_id,
+                                               req_type, std::move(args));
   LogV8("runOnPausedHost.2/2 [after RunOnPausedHost]", "TSM", ThreadStateManager::DumpState());
   return result;
 }
@@ -2174,7 +2206,7 @@ V8ExecutionResult V8Debugger::runOnPausedWorker(const std::string& thread_src,
                                                 std::string&& target_id,
                                                 std::string&& member_id,
                                                 std::string&& args_json,
-                                                bool is_async) {
+                                                bool is_async) const {
   if (!enabled()) return V8ExecutionResult{};
   return ThreadStateManager::RunOnPausedWorker(m_isolate, thread_src, thread_dst, call_id, req_type,
                                                std::move(target_id), std::move(member_id),
