@@ -211,7 +211,7 @@ struct ThreadTaskArguments {
   }
 };
 
-inline std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& a) {
+std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& a) {
   return os << a.toJSON();
 }
 
@@ -222,9 +222,7 @@ struct ThreadTask {
   const std::string req_type;       // Request type
 
   std::optional<ThreadTaskArguments> args;
-
-  bool completed = false;           // Whether the task has been completed
-  V8ExecutionResult result{};       // Result of task execution
+  std::optional<V8ExecutionResult> result = std::nullopt;
 };
 
 struct ThreadPauseState {
@@ -260,14 +258,14 @@ class ThreadStateManager {
       sep = ':';
 
       if (state.resume_call_id.has_value()) {
-        ss << "(" << state.resume_call_id.value() << ")";
+        ss << "(resume " << state.resume_call_id.value() << ")";
       }
 
       if (state.pause_call_ids.empty()) {
         ss << "free";
       } else {
         for (const auto& call_id : state.pause_call_ids) {
-          ss << "[" << call_id << "]";
+          ss << "[pause " << call_id << "]";
         }
       }
     }
@@ -317,8 +315,8 @@ class ThreadStateManager {
       {
         v8::base::MutexGuard lk(&tasks_mutex);
         auto it = tasks.find(t_worker_thread_id);
-        if (it != tasks.end() && it->second.call_id == call_id && it->second.completed) {
-          V8ExecutionResult result = std::move(it->second.result);
+        if (it != tasks.end() && it->second.call_id == call_id && it->second.result.has_value()) {
+          V8ExecutionResult result = std::move(*it->second.result);
           tasks.erase(it);
           LogV8("PauseWorker.3/3", "[result found]");
           return result;
@@ -341,7 +339,6 @@ class ThreadStateManager {
       tasks.emplace(thread_id, ThreadTask{
           "", thread_id, call_id, "", // Empty req_type for completed result-only task
           std::nullopt, // No args needed for completed result-only task
-          true, // completed
           std::move(result)
       });
     }
@@ -550,13 +547,13 @@ class ThreadStateManager {
   static bool CheckTaskStatus(const std::string& thread_id, bool is_completed) {
     v8::base::MutexGuard lk(&tasks_mutex);
     auto it = tasks.find(thread_id);
-    return it != tasks.end() && it->second.completed == is_completed;
+    return it != tasks.end() && it->second.result.has_value() == is_completed;
   }
 
   static V8ExecutionResult GetResultSync(const std::string& thread_id) {
     V8ExecutionResult result{};
     if (const auto it = tasks.find(thread_id); it != tasks.end()) {
-      result = std::move(it->second.result);
+      result = std::move(*it->second.result);
       tasks.erase(it);
     }
     return result;
@@ -604,14 +601,13 @@ class ThreadStateManager {
   static void ProcessTaskOnStack(v8::Isolate* isolate) {
     ThreadTask* task = ShowTask(t_worker_thread_id);
 
-    if (task == nullptr || task->completed) {
-      const char* what = task == nullptr ? "[empty task]" : "[already completed task]";
-      LogV8("ProcessTaskOnStack.3/3", what);
-      return;
-    }
+    std::string reason = task == nullptr ? "[empty task]"
+                         : task->result.has_value()
+                             ? "[already completed task]"
+                             : (!task->args.has_value() ? "[no args]" : "");
 
-    if (!task->args.has_value()) {
-      LogV8("ProcessTaskOnStack.3/3", "[no args]");
+    if (!reason.empty()) {
+      LogV8("ProcessTaskOnStack.3/3", reason);
       return;
     }
 
@@ -654,11 +650,10 @@ class ThreadStateManager {
     } else {
       LogV8("ProcessTaskOnStack.2/3");
       task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
-      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result.commTypeID));
+      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID));
     }
 
     auto thread_id = task->thread_src;
-    task->completed = true;
     GetCV(t_worker_thread_id)->NotifyAll();
 
     if (!thread_id.empty() && thread_id != t_worker_thread_id) {
