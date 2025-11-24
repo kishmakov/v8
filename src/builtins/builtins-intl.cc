@@ -1267,41 +1267,6 @@ BUILTIN(ResumeCall) {
   return result;
 }
 
-BUILTIN(SyncCall) {
-  int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " SyncCall.1/3";
-
-  HandleScope scope(isolate);
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  std::string thread_id = IdToString(args, isolate, 1);
-  std::string call_id = IdToString(args, isolate, 2);
-  std::string target_id = IdToString(args, isolate, 3);
-  std::string member_id = IdToString(args, isolate, 4);
-  std::string args_json = IdToString(args, isolate, 5);
-  std::string result_id = IdToString(args, isolate, 6);
-
-  BuiltinsLog()
-    << " thread_id=" << thread_id
-    << " call_id=" << call_id
-    << " target_id=" << target_id
-    << " member_id=" << member_id
-    << " result_id=" << result_id
-    << std::endl;
-
-  if (target_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
-
-  BuiltinsLog().lock(my_counter) << " SyncCall.2/3" << std::endl;
-  auto result = GetDebugger(v8_isolate)->runOnPausedHost(thread_id, call_id, "w2h:call", std::move(target_id), std::move(member_id), std::move(args_json));
-
-  BuiltinsLog().lock(my_counter) << " SyncCall.3/3"
-    << " type=" << static_cast<int>(result.commTypeID)
-    << " json=" << result.commJSON
-    << std::endl;
-
-  return *DeserializeResult(isolate, result);
-}
-
 BUILTIN(WaitCall) {
   int my_counter = ++counter;
   BuiltinsLog().lock(my_counter) << " WaitCall.1/3";
@@ -1309,13 +1274,13 @@ BUILTIN(WaitCall) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string thread_id = IdToString(args, isolate, 1);
+  std::string thread_dst = IdToString(args, isolate, 1);
   std::string call_id = IdToString(args, isolate, 2);
   std::string target_id = IdToString(args, isolate, 3);
   std::string result_id = IdToString(args, isolate, 4);
 
   BuiltinsLog()
-    << " thread_id=" << thread_id
+    << " thread_dst=" << thread_dst
     << " call_id=" << call_id
     << " result_id=" << result_id
     << " target_id=" << target_id << std::endl;
@@ -1328,7 +1293,7 @@ BUILTIN(WaitCall) {
 
   // Initiate internal silent wait pause via V8Debugger.
   BuiltinsLog().lock(my_counter) << " WaitCall.2/3" << std::endl;
-  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(call_id);
+  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
   Handle<Object> result = DeserializeResult(isolate, result_struct);
@@ -1374,12 +1339,12 @@ BUILTIN(WaitType) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string thread_id = IdToString(args, isolate, 1);
+  std::string thread_dst = IdToString(args, isolate, 1);
   std::string call_id = IdToString(args, isolate, 2);
   std::string target_id = IdToString(args, isolate, 3);
 
   BuiltinsLog()
-    << " thread_id=" << thread_id
+    << " thread_dst=" << thread_dst
     << " call_id=" << call_id
     << " target_id=" << target_id
     << std::endl;
@@ -1392,7 +1357,7 @@ BUILTIN(WaitType) {
   // Pause using the debugger (same path as WaitCall): triggers BreakRightNow
   // with kInternalWait and updates g_paused_thread_ids for this worker.
   BuiltinsLog().lock(my_counter) << " WaitType.2/3" << std::endl;
-  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(call_id);
+  auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitType.3/3";
   Handle<Object> result = DeserializeResult(isolate, result_struct);
@@ -1414,8 +1379,8 @@ BUILTIN(ResumeType) {
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog()
-    << " call_id=" << call_id
     << " thread_id=" << thread_id
+    << " call_id=" << call_id
     << " result_id=" << result_ser.commResultID << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
@@ -1466,23 +1431,25 @@ BUILTIN(RunOnPaused) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string thread_src = IdToString(args, isolate, 1);
-  std::string thread_dst = IdToString(args, isolate, 2);
-  std::string call_id = IdToString(args, isolate, 3);
+  std::string thread_dst = IdToString(args, isolate, 1);
+  std::string call_id = IdToString(args, isolate, 2);
 
-  std::string req_type = IdToString(args, isolate, 4);
+  std::string req_type = IdToString(args, isolate, 3);
+  std::string target_id = IdToString(args, isolate, 4);
+  std::string member_id = IdToString(args, isolate, 5);
+  std::string args_json = IdToString(args, isolate, 6);
+  bool is_async = IdToBool(args, isolate, 7);
 
-  std::string target_id = IdToString(args, isolate, 5);
-  std::string member_id = IdToString(args, isolate, 6);
-  std::string str_args = IdToString(args, isolate, 7);
-  bool is_async = IdToBool(args, isolate, 8);
+  std::string result_id = IdToString(args, isolate, 8);
 
   BuiltinsLog()
-    << " " << thread_src << "->" << thread_dst
+    << " thread_dst=" << thread_dst
     << " call_id=" << call_id
-    << " target=" << target_id
-    << " member=" << member_id
-    << " str_args=" << str_args
+    << " req_type=" << req_type
+    << " result_id=" << result_id
+    << " target_id=" << target_id
+    << " member_id=" << member_id
+    << " args_json=" << args_json
     << std::endl;
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1491,11 +1458,10 @@ BUILTIN(RunOnPaused) {
 
   // Schedule the task to be executed on the destination thread
   BuiltinsLog().lock(my_counter) << " RunOnPaused.2/4 [scheduling task]" << std::endl;
-  auto result =
-      GetDebugger(v8_isolate)
-          ->runOnPausedWorker(thread_src, thread_dst, call_id, req_type,
-                              std::move(target_id), std::move(member_id),
-                              std::move(str_args), is_async);
+  auto result = GetDebugger(v8_isolate)
+                    ->runOnPaused(thread_dst, call_id, std::move(req_type),
+                                  std::move(target_id), std::move(member_id),
+                                  std::move(args_json), is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnPaused.4/4"
     << " type=" << static_cast<int>(result.commTypeID)
@@ -1514,27 +1480,28 @@ BUILTIN(RunOnCold) {
 
   std::string thread_src = IdToString(args, isolate, 1);
   std::string thread_dst = IdToString(args, isolate, 2);
+  std::string call_id = IdToString(args, isolate, 3);
 
-  std::string req_type = IdToString(args, isolate, 3);
-
-  std::string target_id = IdToString(args, isolate, 4);
-  std::string member_id = IdToString(args, isolate, 5);
-  std::string str_args = IdToString(args, isolate, 6);
-  bool is_async = IdToBool(args, isolate, 7);
+  std::string req_type = IdToString(args, isolate, 4);
+  std::string target_id = IdToString(args, isolate, 5);
+  std::string member_id = IdToString(args, isolate, 6);
+  std::string str_args = IdToString(args, isolate, 7);
+  bool is_async = IdToBool(args, isolate, 8);
 
   BuiltinsLog()
     << " thread_src=" << thread_src
     << " thread_dst=" << thread_dst
+    << " call_id=" << call_id
     << " target=" << target_id
     << " member=" << member_id
     << " str_args=" << str_args
     << std::endl;
 
-  auto result =
-      GetDebugger(v8_isolate)
-          ->runOnColdWorker(thread_src, thread_dst, "mock_call_id", req_type,
-                            std::move(target_id), std::move(member_id),
-                            std::move(str_args), is_async);
+  auto result = GetDebugger(v8_isolate)
+                    ->runOnColdWorker(thread_src, thread_dst, call_id,
+                                      std::move(req_type), std::move(target_id),
+                                      std::move(member_id), std::move(str_args),
+                                      is_async);
 
   BuiltinsLog().lock(my_counter) << " RunOnCold.2/2"
     << " type=" << static_cast<int>(result.commTypeID)

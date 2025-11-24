@@ -2135,7 +2135,6 @@ namespace internal {
   /* ecma402 #sup-string.prototype.tolocaleuppercase */                        \
   CPP(StringPrototypeToLocaleUpperCase, kDontAdaptArgumentsSentinel)           \
   CPP(ResumeCall, kDontAdaptArgumentsSentinel)                                 \
-  CPP(SyncCall, kDontAdaptArgumentsSentinel)                                   \
   CPP(WaitCall, kDontAdaptArgumentsSentinel)                                   \
   CPP(PauseThread, kDontAdaptArgumentsSentinel)                                \
   CPP(WaitType, kDontAdaptArgumentsSentinel)                                   \

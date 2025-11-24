@@ -108,28 +108,20 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  V8ExecutionResult pauseWorker(const std::string& call_id) const;
-  void resumeWorker(const std::string& for_thread, const std::string& call_id, V8ExecutionResult&& result) const;
+  V8ExecutionResult pauseWorker(const std::string& thread_dst, const std::string& call_id) const;
+  void resumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) const;
   int getPauseDepth(const std::string& thread_id) const;
 
-  V8ExecutionResult runOnPausedHost(const std::string& thread_id,
-                                    const std::string& call_id,
-                                    const std::string& req_type,
-                                    std::string&& target_id,
-                                    std::string&& member_id,
-                                    std::string&& args_json) const;
-  V8ExecutionResult runOnPausedWorker(const std::string& thread_src,
-                                      const std::string& thread_dst,
-                                      const std::string& call_id,
-                                      const std::string& req_type,
-                                      std::string&& target_id,
-                                      std::string&& member_id,
-                                      std::string&& args_json,
-                                      bool is_async) const;
+  V8ExecutionResult runOnPaused(const std::string& thread_dst,
+                                const std::string& call_id,
+                                std::string&& req_type,
+                                std::string&& target_id,
+                                std::string&& member_id,
+                                std::string&& args_json, bool is_async) const;
   V8ExecutionResult runOnColdWorker(const std::string& thread_src,
                                     const std::string& thread_dst,
                                     const std::string& call_id,
-                                    const std::string& req_type,
+                                    std::string&& req_type,
                                     std::string&& target_id,
                                     std::string&& member_id,
                                     std::string&& args_json, bool is_async) const;

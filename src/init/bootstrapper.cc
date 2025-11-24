@@ -2815,11 +2815,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                     isolate_->initial_object_prototype(),
                     Builtin::kResumeCall, 1, kDontAdapt);
 
-    InstallFunction(isolate_, global, "SyncCall", JS_PRIMITIVE_WRAPPER_TYPE,
-                    JSPrimitiveWrapper::kHeaderSize, 0,
-                    isolate_->initial_object_prototype(),
-                    Builtin::kSyncCall, 1, kDontAdapt);
-
     InstallFunction(isolate_, global, "WaitCall", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),
