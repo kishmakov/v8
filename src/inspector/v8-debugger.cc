@@ -413,14 +413,21 @@ class ThreadStateManager {
     return result;
   }
 
-  static int Depth(const std::string& thread_id) {
+  static bool IsPaused(const std::string& thread_id) {
     v8::base::MutexGuard g(&thread_state_mutex);
-    return static_cast<int>(thread_states[thread_id].tasks.size());
+    return thread_states[thread_id].pause_type != ThreadPauseType::NORMAL;
   }
 
   static void InPauseDispatch(v8::Isolate* isolate, int* context_group) {
-    // Loop until all nested pauses for this thread are resumed.
+    RunDispatchLoop(isolate);
+    v8::debug::SetBlackBoxPausesPolicy(isolate, false);
+    *context_group = 0;
+  }
+
+ private:
+  static void RunDispatchLoop(v8::Isolate* isolate) {
     for (;;) {
+      LogV8("RunDispatchLoop", "TSM", DumpState());
       if (IsTopTaskProcessable(t_worker_thread_id)) ProcessTaskOnStack(isolate);
       if (ReadyToResume(t_worker_thread_id)) break;
 
@@ -428,12 +435,8 @@ class ThreadStateManager {
       v8::base::MutexGuard guard(&thread_state_mutex);
       GetCV(t_worker_thread_id)->Wait(&thread_state_mutex);
     }
-
-    v8::debug::SetBlackBoxPausesPolicy(isolate, false);
-    *context_group = 0;
   }
 
- private:
   static bool CheckPaused(const std::string& thread_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
     return thread_states[thread_id].pause_type != ThreadPauseType::NORMAL;
@@ -501,7 +504,11 @@ class ThreadStateManager {
   static V8ExecutionResult WaitForTask(v8::Isolate* isolate, const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     LogV8("WaitForTask.1/3", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
     GetCV(thread_dst)->NotifyAll();
-    PauseCurrentThreadRightNow(isolate);
+    if (IsPaused(thread_src)) {
+      RunDispatchLoop(isolate);
+    } else {
+      PauseCurrentThreadRightNow(isolate);
+    }
     LogV8("WaitForTask.2/3", "TSM", DumpState());
     auto result = TryPickResult(thread_dst, call_id);
     DCHECK(result.has_value());
@@ -540,8 +547,8 @@ class ThreadStateManager {
     std::string thread_src = task->thread_src;
 
     const ThreadTaskArguments& args = task->args.value();
-    LogV8("ProcessTaskOnStack.1/3", "target", args.target_id,
-        "member", args.member_id, "is_async", args.is_async);
+    LogV8("ProcessTaskOnStack.1/3", "target_id", args.target_id,
+        "member_id", args.member_id, "is_async", args.is_async);
 
     v8::HandleScope handle_scope(isolate);
     v8::Context::Scope context_scope(isolate->GetCurrentContext());
@@ -2088,11 +2095,11 @@ void V8Debugger::resumeWorker(const std::string& thread_dst, const std::string& 
   ThreadStateManager::ResumeWorker(t_worker_thread_id, thread_dst, call_id, std::move(result));
 }
 
-int V8Debugger::getPauseDepth(const std::string& thread_id) const {
-  if (!enabled()) return 0;
-  int depth = ThreadStateManager::Depth(thread_id);
-  LogV8("getPauseDepth.1/1", "thread_id", thread_id, "depth", depth);
-  return depth;
+bool V8Debugger::getPaused(const std::string& thread_id) const {
+  if (!enabled()) return false;
+  bool paused = ThreadStateManager::IsPaused(thread_id);
+  LogV8("getPauseDepth.1/1", "thread_id", thread_id, "paused", paused, "TSM", ThreadStateManager::DumpState()); // TODO: don't dump state
+  return paused;
 }
 
 V8ExecutionResult V8Debugger::runOnPaused(
