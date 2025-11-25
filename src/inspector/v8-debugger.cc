@@ -194,20 +194,17 @@ struct ThreadTask {
 
   std::optional<ThreadTaskArguments> args;
   std::optional<V8ExecutionResult> result = std::nullopt;
+  bool is_processing = false;
 };
 
-enum class ThreadPauseType {
-  WAITING_FOR_OTHER,
-  WAITING_FOR_ITSELF,
-  NORMAL
+struct ThreadPauseType {
+  std::string awaited_thread_id;
+  std::string awaited_call_id;
 };
 
 struct ThreadPauseState {
   std::vector<ThreadTask> tasks;  // stack of tasks that represent current thread state
-  ThreadPauseType pause_type = ThreadPauseType::NORMAL;
-
-  std::string awaited_thread_id; // non-empty if pause_type == WAITING_FOR_OTHER
-  std::string awaited_call_id;  // non-empty if pause_type == WAITING_FOR_OTHER
+  std::vector<ThreadPauseType> pauses;
 
   bool TopIsReady(const std::string& call_id) const {
     if (tasks.empty()) return false;
@@ -215,12 +212,12 @@ struct ThreadPauseState {
     return tasks.back().result.has_value();
   }
 
-  // returns previous pause type
-  void ToWaitingForOther(const std::string& thread_id, const std::string& call_id) {
-    DCHECK(pause_type == ThreadPauseType::NORMAL);
-    pause_type = ThreadPauseType::WAITING_FOR_OTHER;
-    awaited_thread_id = thread_id;
-    awaited_call_id = call_id;
+  void PushPause(const std::string& thread_id, const std::string& call_id) {
+    pauses.push_back({thread_id, call_id});
+  }
+
+  void PopPause() {
+    if (!pauses.empty()) pauses.pop_back();
   }
 
   void AppendWaitTask(const std::string& thread_src,
@@ -349,6 +346,7 @@ class ThreadStateManager {
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
     LogV8("RunOnPausedHost.2/4 [check paused]");
     DCHECK(CheckPaused(thread_src));
+    MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
@@ -415,7 +413,7 @@ class ThreadStateManager {
 
   static bool IsPaused(const std::string& thread_id) {
     v8::base::MutexGuard g(&thread_state_mutex);
-    return thread_states[thread_id].pause_type != ThreadPauseType::NORMAL;
+    return !thread_states[thread_id].pauses.empty();
   }
 
   static void InPauseDispatch(v8::Isolate* isolate, int* context_group) {
@@ -426,8 +424,9 @@ class ThreadStateManager {
 
  private:
   static void RunDispatchLoop(v8::Isolate* isolate) {
+    LogV8("RunDispatchLoop.1/3", "TSM", DumpState());
     for (;;) {
-      LogV8("RunDispatchLoop", "TSM", DumpState());
+      LogV8("RunDispatchLoop.2/3", "TSM", DumpState());
       if (IsTopTaskProcessable(t_worker_thread_id)) ProcessTaskOnStack(isolate);
       if (ReadyToResume(t_worker_thread_id)) break;
 
@@ -435,17 +434,18 @@ class ThreadStateManager {
       v8::base::MutexGuard guard(&thread_state_mutex);
       GetCV(t_worker_thread_id)->Wait(&thread_state_mutex);
     }
+    LogV8("RunDispatchLoop.3/3", "TSM", DumpState());
   }
 
   static bool CheckPaused(const std::string& thread_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
-    return thread_states[thread_id].pause_type != ThreadPauseType::NORMAL;
+    return !thread_states[thread_id].pauses.empty();
   }
 
   static void MarkPaused(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     LogV8("MarkPaused.1/1", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
     v8::base::MutexGuard guard(&thread_state_mutex);
-    thread_states[thread_src].ToWaitingForOther(thread_dst, call_id);
+    thread_states[thread_src].PushPause(thread_dst, call_id);
     thread_states[thread_dst].AppendWaitTask(thread_src, thread_dst, call_id);
     GetCV(thread_dst)->NotifyAll(); // wake up any waiter on thread_dst
   }
@@ -454,7 +454,7 @@ class ThreadStateManager {
     LogV8("MarkResumed.1/1", "thread_id", thread_id);
     v8::base::MutexGuard guard(&thread_state_mutex);
     ThreadPauseState& state = thread_states[thread_id];
-    state.pause_type = ThreadPauseType::NORMAL;
+    state.PopPause();
     GetCV(thread_id)->NotifyAll(); // wake up any waiter on thread_id
   }
 
@@ -466,23 +466,18 @@ class ThreadStateManager {
 
   static bool IsTopTaskProcessable(const std::string& thread_id) {
     auto* task = TopTaskFor(thread_id);
-    return task != nullptr && !task->result.has_value() && task->args.has_value();
+    return task != nullptr && !task->result.has_value() && task->args.has_value() && !task->is_processing;
   }
 
   static bool ReadyToResume(const std::string& thread_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
     const auto& state = thread_states[thread_id];
 
-    if (state.pause_type == ThreadPauseType::NORMAL) return true;
-    if (state.pause_type == ThreadPauseType::WAITING_FOR_ITSELF) {
-      return state.tasks.empty() || state.TopIsReady(state.tasks.back().call_id);
-    }
+    if (state.pauses.empty()) return true;
 
-    DCHECK(!state.awaited_call_id.empty());
-    DCHECK(!state.awaited_thread_id.empty());
-
-    const auto& other_state = thread_states[state.awaited_thread_id];
-    return other_state.TopIsReady(state.awaited_call_id);
+    const auto& top = state.pauses.back();
+    const auto& other_state = thread_states[top.awaited_thread_id];
+    return other_state.TopIsReady(top.awaited_call_id);
   }
 
   static std::optional<V8ExecutionResult> TryPickResult(const std::string& thread_id, const std::string& call_id) {
@@ -536,7 +531,11 @@ class ThreadStateManager {
     std::string reason = task == nullptr ? "[empty task]"
                          : task->result.has_value()
                              ? "[already completed task]"
-                             : (!task->args.has_value() ? "[no args]" : "");
+                             : !task->args.has_value()
+                               ? "[no args]"
+                               : task->is_processing
+                                 ? "[task is executing]"
+                                 : "";
 
     if (!reason.empty()) {
       LogV8("ProcessTaskOnStack.3/3", reason);
@@ -547,6 +546,7 @@ class ThreadStateManager {
     std::string thread_src = task->thread_src;
 
     const ThreadTaskArguments& args = task->args.value();
+    task->is_processing = true;
     LogV8("ProcessTaskOnStack.1/3", "target_id", args.target_id,
         "member_id", args.member_id, "is_async", args.is_async);
 
@@ -2098,7 +2098,7 @@ void V8Debugger::resumeWorker(const std::string& thread_dst, const std::string& 
 bool V8Debugger::getPaused(const std::string& thread_id) const {
   if (!enabled()) return false;
   bool paused = ThreadStateManager::IsPaused(thread_id);
-  LogV8("getPauseDepth.1/1", "thread_id", thread_id, "paused", paused, "TSM", ThreadStateManager::DumpState()); // TODO: don't dump state
+  LogV8("getPaused", "thread_id", thread_id, "paused", paused, "TSM", ThreadStateManager::DumpState()); // TODO: don't dump state
   return paused;
 }
 
@@ -2180,18 +2180,21 @@ std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& args) {
 std::ostream& operator<<(std::ostream& os, const ThreadTask& task) {
   bool has_args = task.args.has_value();
   bool has_res = task.result.has_value();
-  return os << (has_args ? "[" : "(") << (has_res ? "ready " : "wait ")
+  std::string state = has_res ? "ready " : (task.is_processing ? "run " : "wait ");
+
+  return os << (has_args ? "[" : "(") << state
             << task.call_id << (has_args ? "]" : ")");
 }
 
 
 std::ostream& operator<<(std::ostream& os, const ThreadPauseState& state) {
-  if (state.pause_type == ThreadPauseType::WAITING_FOR_OTHER) {
-    os << "waits(" << state.awaited_call_id << "@" << state.awaited_thread_id << ") ";
-  } else if (state.pause_type == ThreadPauseType::WAITING_FOR_ITSELF) {
-    os << "waits itself";
-  } else {
+  if (state.pauses.empty()) {
     os << "normal";
+  } else {
+    os << "waits";
+    for (const auto& p : state.pauses) {
+      os << "<" << p.awaited_call_id << "@" << p.awaited_thread_id << ">";
+    }
   }
 
   for (const auto& task : state.tasks) {
