@@ -203,7 +203,6 @@ struct ThreadPauseType {
 };
 
 struct ThreadPauseState {
-  std::vector<ThreadTask> tasks;  // stack of tasks that represent current thread state
   std::vector<ThreadPauseType> pauses;
 
   bool TopIsReady(const std::string& call_id) const {
@@ -220,11 +219,17 @@ struct ThreadPauseState {
     if (!pauses.empty()) pauses.pop_back();
   }
 
-  void AppendWaitTask(const std::string& thread_src,
-                      const std::string& thread_dst,
-                      const std::string& call_id) {
+  void PushTask(const std::string& thread_src,
+                const std::string& thread_dst,
+                const std::string& call_id,
+                std::optional<ThreadTaskArguments>&& args = std::nullopt) {
     if (!tasks.empty() && tasks.back().call_id == call_id) return;  // already exists
-    tasks.emplace_back(thread_src, thread_dst, call_id, std::nullopt);
+    tasks.emplace_back(thread_src, thread_dst, call_id, std::move(args));
+  }
+
+  ThreadTask* LastTask() {
+    if (tasks.empty()) return nullptr;
+    return &tasks.back();
   }
 
   V8ExecutionResult PopResult() {
@@ -237,6 +242,9 @@ struct ThreadPauseState {
     tasks.pop_back();
     return result;
   }
+private:
+  friend std::ostream& operator<<(std::ostream& os, const ThreadPauseState& state);
+  std::vector<ThreadTask> tasks;  // stack of tasks that represent current thread state
 };
 
 std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& args);
@@ -259,8 +267,8 @@ class ThreadStateManager {
     std::stringstream ss;
     char sep = '{';
     for (const auto& [thread_id, state] : thread_states) {
-      ss << sep << thread_id << "->" << state;
-      sep = ':';
+      ss << sep << thread_id << "=" << state;
+      sep = '|';
     }
     ss << "}";
     return ss.str();
@@ -315,22 +323,13 @@ class ThreadStateManager {
   }
 
   static void ResumeWorker(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) {
-    LogV8("ResumeWorker.1/2", "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
+    LogV8("ResumeWorker.1/2", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
 
     {
       v8::base::MutexGuard guard(&thread_state_mutex);
       auto& state = thread_states[thread_src];
-
-      ThreadTask* last_task = nullptr;
-
-      if (!state.tasks.empty() && state.tasks.back().call_id == call_id) {
-        last_task = &state.tasks.back();
-      } else {
-        state.tasks.emplace_back(t_worker_thread_id, thread_dst, call_id, std::nullopt);
-        last_task = &state.tasks.back();
-      }
-
-      last_task->result = std::move(result);
+      state.PushTask(t_worker_thread_id, thread_dst, call_id);
+      state.LastTask()->result = std::move(result);
     }
 
     GetCV(thread_src)->NotifyAll();
@@ -417,13 +416,6 @@ class ThreadStateManager {
     return !thread_states[thread_id].pauses.empty();
   }
 
-  static void InPauseDispatch(v8::Isolate* isolate, int* context_group) {
-    RunDispatchLoop(isolate);
-    v8::debug::SetBlackBoxPausesPolicy(isolate, false);
-    *context_group = 0;
-  }
-
- private:
   static void RunDispatchLoop(v8::Isolate* isolate) {
     LogV8("RunDispatchLoop.1/3", "TSM", DumpState());
     for (;;) {
@@ -438,18 +430,18 @@ class ThreadStateManager {
     LogV8("RunDispatchLoop.3/3", "TSM", DumpState());
   }
 
+ private:
   static void MarkPaused(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     LogV8("MarkPaused", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
     v8::base::MutexGuard guard(&thread_state_mutex);
     thread_states[thread_src].PushPause(thread_dst, call_id);
-    thread_states[thread_dst].AppendWaitTask(thread_src, thread_dst, call_id);
-    GetCV(thread_dst)->NotifyAll(); // wake up any waiter on thread_dst
+    thread_states[thread_dst].PushTask(thread_src, thread_dst, call_id); // append waiting task
+    GetCV(thread_dst)->NotifyAll();
   }
 
   static ThreadTask* TopTaskFor(const std::string& thread_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
-    auto& state = thread_states[thread_id];
-    return state.tasks.empty() ? nullptr : &state.tasks.back();
+    return thread_states[thread_id].LastTask();
   }
 
   static bool IsTopTaskProcessable(const std::string& thread_id) {
@@ -489,8 +481,7 @@ class ThreadStateManager {
                            const std::string& call_id,
                            ThreadTaskArguments&& args) {
     v8::base::MutexGuard guard(&thread_state_mutex);
-    auto& state = thread_states[thread_dst];
-    state.tasks.emplace_back(thread_src, thread_dst, call_id, std::move(args));
+    thread_states[thread_dst].PushTask(thread_src, thread_dst, call_id, std::move(args));
   }
 
   static V8ExecutionResult WaitForTask(v8::Isolate* isolate, const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
@@ -1129,9 +1120,11 @@ void V8Debugger::handleProgramBreak(
   // We intentionally do not emit Debugger paused/resumed events.
   // We simply park this thread until resumeCall is invoked.
   if (breakReasons.contains(v8::debug::BreakReason::kInternalWait)) {
-    LogV8("handleProgramBreak.1/2", "[before WaitAndProcessTasks]");
-    ThreadStateManager::InPauseDispatch(m_isolate, &m_targetContextGroupId);
-    LogV8("handleProgramBreak.2/2", "[after WaitAndProcessTasks]");
+    LogV8("handleProgramBreak.1/2 [before RunDispatchLoop]");
+    ThreadStateManager::RunDispatchLoop(m_isolate);
+    v8::debug::SetBlackBoxPausesPolicy(m_isolate, false);
+    m_targetContextGroupId = 0;
+    LogV8("handleProgramBreak.2/2 [after RunDispatchLoop]");
     return;
   }
 

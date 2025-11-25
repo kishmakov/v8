@@ -1210,30 +1210,6 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
   return result;
 }
 
-// true if value was serialized
-// bool ShelveValue(v8_inspector::V8ExecutionResult&& res) {
-//   int typeCode = static_cast<int>(res.commTypeID);
-//   BuiltinsLog() << " type=" << typeCode;
-//   if (!res.commJSON.empty()) BuiltinsLog() << " json=" << res.commJSON;
-//   auto key = res.commResultID;  // copy to keep value inside res
-//   idToResult.emplace(std::move(key), std::move(res));
-//   return typeCode < 100;
-// }
-
-// Handle<Object> UnshelveValue(Isolate* isolate, const std::string& id) {
-//   if (idToResult.count(id) == 0) {
-//     BuiltinsLog() << " failed to locate id=" << id;
-//     return Handle<Object>(ReadOnlyRoots(isolate).undefined_value(), isolate);
-//   }
-
-//   auto& res = idToResult[id];
-//   BuiltinsLog() << " type=" << static_cast<int>(res.commTypeID) << " ctor=" << res.commProto;
-//   Handle<Object> result = DeserializeResult(isolate, res);
-//   idToResult.erase(id);
-//   return result;
-// }
-
-
 } // namespace
 
 BUILTIN(ResumeCall) {
