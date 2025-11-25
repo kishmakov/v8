@@ -296,7 +296,7 @@ class ThreadStateManager {
     DCHECK(thread_dst != t_worker_thread_id);
     LogV8("PauseWorker.1/5", "thread_dst", thread_dst, "call_id", call_id);
 
-    if (auto result = TryPickResult(thread_dst, call_id)) {
+    if (auto result = TryPickResult(t_worker_thread_id, thread_dst, call_id)) {
       LogV8("PauseWorker.5/5 [early return]");
       return *result;
     }
@@ -308,7 +308,7 @@ class ThreadStateManager {
     PauseCurrentThreadRightNow(isolate);
 
     LogV8("PauseWorker.4/5 [after PauseCurrentThreadRightNow]");
-    auto result = TryPickResult(thread_dst, call_id);
+    auto result = TryPickResult(t_worker_thread_id, thread_dst, call_id);
     DCHECK(result.has_value());
     LogV8("PauseWorker.5/5 [resumed]");
     return *result;
@@ -333,7 +333,8 @@ class ThreadStateManager {
       last_task->result = std::move(result);
     }
 
-    MarkResumed(thread_dst);
+    GetCV(thread_src)->NotifyAll();
+    GetCV(thread_dst)->NotifyAll();
     LogV8("ResumeWorker.2/2 [signaled]", "TSM", DumpState());
   }
 
@@ -345,7 +346,7 @@ class ThreadStateManager {
     LogV8("RunOnPausedHost.1/4", "thread_src", thread_src, "call_id", call_id, "args", args);
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
     LogV8("RunOnPausedHost.2/4 [check paused]");
-    DCHECK(CheckPaused(thread_src));
+    DCHECK(IsPaused(thread_src));
     MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
@@ -437,25 +438,12 @@ class ThreadStateManager {
     LogV8("RunDispatchLoop.3/3", "TSM", DumpState());
   }
 
-  static bool CheckPaused(const std::string& thread_id) {
-    v8::base::MutexGuard guard(&thread_state_mutex);
-    return !thread_states[thread_id].pauses.empty();
-  }
-
   static void MarkPaused(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
-    LogV8("MarkPaused.1/1", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
+    LogV8("MarkPaused", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
     v8::base::MutexGuard guard(&thread_state_mutex);
     thread_states[thread_src].PushPause(thread_dst, call_id);
     thread_states[thread_dst].AppendWaitTask(thread_src, thread_dst, call_id);
     GetCV(thread_dst)->NotifyAll(); // wake up any waiter on thread_dst
-  }
-
-  static void MarkResumed(const std::string& thread_id) {
-    LogV8("MarkResumed.1/1", "thread_id", thread_id);
-    v8::base::MutexGuard guard(&thread_state_mutex);
-    ThreadPauseState& state = thread_states[thread_id];
-    state.PopPause();
-    GetCV(thread_id)->NotifyAll(); // wake up any waiter on thread_id
   }
 
   static ThreadTask* TopTaskFor(const std::string& thread_id) {
@@ -480,10 +468,19 @@ class ThreadStateManager {
     return other_state.TopIsReady(top.awaited_call_id);
   }
 
-  static std::optional<V8ExecutionResult> TryPickResult(const std::string& thread_id, const std::string& call_id) {
+  static std::optional<V8ExecutionResult> TryPickResult(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
-    auto& state = thread_states[thread_id];
-    if (state.TopIsReady(call_id)) return state.PopResult();
+    auto& state_src = thread_states[thread_src];
+    if (state_src.pauses.empty()) return std::nullopt;
+    DCHECK(state_src.pauses.back().awaited_thread_id == thread_dst);
+    DCHECK(state_src.pauses.back().awaited_call_id == call_id);
+
+    auto& state_dst = thread_states[thread_dst];
+    if (state_dst.TopIsReady(call_id)) {
+      state_src.PopPause();
+      return state_dst.PopResult();
+    }
+
     return std::nullopt;
   }
 
@@ -505,7 +502,7 @@ class ThreadStateManager {
       PauseCurrentThreadRightNow(isolate);
     }
     LogV8("WaitForTask.2/3", "TSM", DumpState());
-    auto result = TryPickResult(thread_dst, call_id);
+    auto result = TryPickResult(thread_src, thread_dst, call_id);
     DCHECK(result.has_value());
     LogV8("WaitForTask.3/3 [computed]", "type", static_cast<int>(result->commTypeID));
     return *result;
@@ -547,7 +544,7 @@ class ThreadStateManager {
 
     const ThreadTaskArguments& args = task->args.value();
     task->is_processing = true;
-    LogV8("ProcessTaskOnStack.1/3", "target_id", args.target_id,
+    LogV8("ProcessTaskOnStack.1/3", "call_id", task->call_id, "target_id", args.target_id,
         "member_id", args.member_id, "is_async", args.is_async);
 
     v8::HandleScope handle_scope(isolate);
@@ -590,9 +587,8 @@ class ThreadStateManager {
       LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID));
     }
 
-    DCHECK(!thread_src.empty());
-    MarkResumed(thread_src);
     GetCV(t_worker_thread_id)->NotifyAll();
+    GetCV(thread_src)->NotifyAll();
   }
 };
 
@@ -2086,7 +2082,6 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
 
 V8ExecutionResult V8Debugger::pauseWorker(const std::string& thread_dst, const std::string& call_id) const {
   DCHECK(enabled());
-  LogV8("pauseWorker.1/3", "thread_dst", thread_dst, "call_id", call_id);
   return ThreadStateManager::PauseWorker(m_isolate, thread_dst, call_id);
 }
 
@@ -2111,7 +2106,7 @@ V8ExecutionResult V8Debugger::runOnPaused(
   ThreadTaskArguments args{std::move(req_type), std::move(target_id), std::move(member_id),
                            std::move(args_json), is_async};
 
-  LogV8("runOnPaused.1/1", "thread_dst", thread_dst, "call_id", call_id, "TSM",
+  LogV8("runOnPaused", "thread_dst", thread_dst, "call_id", call_id, "TSM",
         ThreadStateManager::DumpState());
 
 
