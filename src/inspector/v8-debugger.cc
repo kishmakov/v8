@@ -291,12 +291,12 @@ class ThreadStateManager {
       g_worker_contexts[thread_id].Reset(isolate, isolate->GetCurrentContext());
 
       if (func.IsEmpty() || !func->IsFunction()) {
-        LogV8("RegisterWorkerThread.2/2", "[failed to locate function]");
+        LogV8("RegisterWorkerThread.2/2 [failed to locate function]");
         return;
       }
 
       g_worker_funcs[thread_id].Reset(isolate, func.As<v8::Function>());
-      LogV8("RegisterWorkerThread.2/2", "[success]");
+      LogV8("RegisterWorkerThread.2/2 [success]");
     }
   }
 
@@ -323,6 +323,7 @@ class ThreadStateManager {
   }
 
   static void ResumeWorker(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) {
+    DCHECK(t_worker_thread_id == thread_src);
     LogV8("ResumeWorker.1/2", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
 
     {
@@ -380,31 +381,31 @@ class ThreadStateManager {
     v8::Isolate* target_isolate = GetThreadIsolate(thread_dst);
 
     if (!target_isolate) {
-      LogV8("RunOnColdWorker.5/5", "[failed to find isolate]");
+      LogV8("RunOnColdWorker.5/5 [failed to find isolate]");
       return V8ExecutionResult{};
     }
 
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
-    LogV8("RunOnColdWorker.2/5", "[job created]");
+    LogV8("RunOnColdWorker.2/5 [job created]");
 
     MarkPaused(t_worker_thread_id, thread_dst, call_id);
 
     // schedule interrupt on the worker's isolate to execute the task
     target_isolate->RequestInterrupt(
         [](v8::Isolate* isolate, void* /*data*/) {
-          LogV8("RunOnColdWorker", "[interruption requested]");
+          LogV8("RunOnColdWorker [interruption requested]");
           PauseCurrentThreadRightNow(isolate);
         },
         nullptr);
 
-    LogV8("RunOnColdWorker.3/5", "[debugger enabled]");
+    LogV8("RunOnColdWorker.3/5 [debugger enabled]");
 
     // force post cold worker thread to run a foreground poke task
     auto* platform = v8::debug::GetCurrentPlatform();
     auto runner = platform->GetForegroundTaskRunner(target_isolate);
     runner->PostTask(std::make_unique<PokeTask>(target_isolate));
 
-    LogV8("RunOnColdWorker.4/5", "[phony task posted]");
+    LogV8("RunOnColdWorker.4/5 [phony task posted]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
     LogV8("RunOnColdWorker.5/5 [computed]", "type", static_cast<int>(result.commTypeID));
 
@@ -546,7 +547,7 @@ class ThreadStateManager {
     v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_worker_thread_id].Get(isolate).As<v8::Value>();;
 
     if (call_function_candidate->IsUndefined()) {
-      LogV8("ProcessTaskOnStack.3/3", "func_undefined");
+      LogV8("ProcessTaskOnStack.3/3 [func undefined]");
       GetCV(t_worker_thread_id)->NotifyAll();
       return;
     }
@@ -1065,7 +1066,7 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
   v8::Local<v8::Value> value_value;
   const auto& context = isolate->GetCurrentContext();
   if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
-    LogV8("V8SerializeResult", "failed to locate result_ser.CommValue");
+    LogV8("V8SerializeResult [failed to locate result_ser.CommValue]");
     return V8ExecutionResult{};
   }
 
