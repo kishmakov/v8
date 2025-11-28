@@ -117,7 +117,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                                 std::string&& req_type,
                                 std::string&& target_id,
                                 std::string&& member_id,
-                                std::string&& args_json, bool is_async) const;
+                                std::string&& args_json, bool is_async, bool serialize) const;
   V8ExecutionResult runOnColdWorker(const std::string& thread_src,
                                     const std::string& thread_dst,
                                     const std::string& call_id,

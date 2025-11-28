@@ -185,6 +185,7 @@ struct ThreadTaskArguments {
   std::string member_id;
   std::string args_json;
   bool is_async;
+  bool serialize;
 };
 
 struct ThreadTask {
@@ -317,7 +318,14 @@ class ThreadStateManager {
 
     LogV8("PauseWorker.4/5 [after PauseCurrentThreadRightNow]");
     auto result = TryPickResult(t_worker_thread_id, thread_dst, call_id);
-    DCHECK(result.has_value());
+    if (!result.has_value()) {
+      LogV8("PauseWorker.5/5 [ERROR: result not available after resume]", "TSM", DumpState());
+      // Return an error result instead of crashing
+      V8ExecutionResult error_result;
+      error_result.commTypeID = V8TypeID::String;
+      error_result.strValue = "Error: Worker resumed without result";
+      return error_result;
+    }
     LogV8("PauseWorker.5/5 [resumed]");
     return *result;
   }
@@ -537,7 +545,7 @@ class ThreadStateManager {
     const ThreadTaskArguments& args = task->args.value();
     task->is_processing = true;
     LogV8("ProcessTaskOnStack.1/3", "call_id", task->call_id, "target_id", args.target_id,
-        "member_id", args.member_id, "is_async", args.is_async);
+        "member_id", args.member_id, "is_async", args.is_async, "serialize", args.serialize);
 
     v8::HandleScope handle_scope(isolate);
     v8::Context::Scope context_scope(isolate->GetCurrentContext());
@@ -559,11 +567,12 @@ class ThreadStateManager {
     const v8::Local<v8::Value> v8_member = CppToV8(isolate, args.member_id);
     const v8::Local<v8::Value> v8_args = CppToV8(isolate, args.args_json);
     const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
+    const v8::Local<v8::Boolean> v8_serialize = v8::Boolean::New(isolate, args.serialize);
 
     const std::string call_id = task->call_id;
 
-    constexpr size_t num_args = 5;
-    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async};
+    constexpr size_t num_args = 6;
+    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async, v8_serialize};
 
     LogV8("ProcessTaskOnStack.2/3 [before JS call]");
 
@@ -1059,12 +1068,20 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeID::Other;
 }
 
+size_t fib(int n) { /* fib(41) < 10 */
+  return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
+}
+
 V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
                                     const v8::Local<v8::Value> result_ser) {
   v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
 
   v8::Local<v8::Value> value_value;
   const auto& context = isolate->GetCurrentContext();
+  if (!result_ser->IsObject()) {
+    LogV8("V8SerializeResult [failed to compute result as object]", "fib", fib(239));
+    return V8ExecutionResult{};
+  }
   if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
     LogV8("V8SerializeResult [failed to locate result_ser.CommValue]");
     return V8ExecutionResult{};
@@ -2094,11 +2111,11 @@ bool V8Debugger::getPaused(const std::string& thread_id) const {
 V8ExecutionResult V8Debugger::runOnPaused(
     const std::string& thread_dst, const std::string& call_id,
     std::string&& req_type, std::string&& target_id, std::string&& member_id,
-    std::string&& args_json, bool is_async) const {
+    std::string&& args_json, bool is_async, bool serialize) const {
   DCHECK(enabled());
 
   ThreadTaskArguments args{std::move(req_type), std::move(target_id), std::move(member_id),
-                           std::move(args_json), is_async};
+                           std::move(args_json), is_async, serialize};
 
   LogV8("runOnPaused", "thread_dst", thread_dst, "call_id", call_id, "TSM",
         ThreadStateManager::DumpState());
@@ -2121,7 +2138,7 @@ V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
   if (!enabled()) return V8ExecutionResult{};
   ThreadTaskArguments args{std::move(req_type), std::move(target_id),
                            std::move(member_id), std::move(args_json),
-                           is_async};
+                           is_async, false}; // TODO serialize
 
   return ThreadStateManager::RunOnColdWorker(m_isolate, thread_src, thread_dst,
                                              call_id, std::move(args));

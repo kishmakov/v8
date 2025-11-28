@@ -1415,8 +1415,9 @@ BUILTIN(RunOnPaused) {
   std::string member_id = IdToString(args, isolate, 5);
   std::string args_json = IdToString(args, isolate, 6);
   bool is_async = IdToBool(args, isolate, 7);
+  bool serialize = IdToBool(args, isolate, 8);
 
-  std::string result_id = IdToString(args, isolate, 8);
+  std::string result_id = IdToString(args, isolate, 9);
 
   BuiltinsLog()
     << " thread_dst=" << thread_dst
@@ -1426,6 +1427,8 @@ BUILTIN(RunOnPaused) {
     << " target_id=" << target_id
     << " member_id=" << member_id
     << " args_json=" << args_json
+    << " is_async=" << is_async
+    << " serialize=" << serialize
     << std::endl;
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1437,7 +1440,7 @@ BUILTIN(RunOnPaused) {
   auto result = GetDebugger(v8_isolate)
                     ->runOnPaused(thread_dst, call_id, std::move(req_type),
                                   std::move(target_id), std::move(member_id),
-                                  std::move(args_json), is_async);
+                                  std::move(args_json), is_async, serialize);
 
   BuiltinsLog().lock(my_counter) << " RunOnPaused.4/4"
     << " type=" << static_cast<int>(result.commTypeID)
