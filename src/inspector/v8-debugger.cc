@@ -68,7 +68,7 @@ struct PairPrinter {
 
   template <typename K, typename... Rest>
   void operator()(K&& k, const std::string& v, Rest&&... rest) const {
-    log << ' ' << k << '=' << (v.empty() ? "<failed: empty id>" : v);
+    log << ' ' << k << '=' << (v.empty() ? "\"\" (empty string)" : v);
     (*this)(std::forward<Rest>(rest)...);
   }
 
@@ -460,7 +460,7 @@ class ThreadStateManager {
 
   static bool ReadyToResume(const std::string& thread_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
-    const auto& state = thread_states[thread_id];
+    auto& state = thread_states[thread_id];
 
     if (state.pauses.empty()) return true;
 
@@ -504,7 +504,7 @@ class ThreadStateManager {
     LogV8("WaitForTask.2/3", "TSM", DumpState());
     auto result = TryPickResult(thread_src, thread_dst, call_id);
     DCHECK(result.has_value());
-    LogV8("WaitForTask.3/3 [computed]", "type", static_cast<int>(result->commTypeID));
+    LogV8("WaitForTask.3/3 [computed]", "type", static_cast<int>(result->commTypeID), "TSM", DumpState());
     return *result;
   }
 
@@ -555,7 +555,7 @@ class ThreadStateManager {
     v8::Local<v8::Value> call_function_candidate = g_worker_funcs[t_worker_thread_id].Get(isolate).As<v8::Value>();;
 
     if (call_function_candidate->IsUndefined()) {
-      LogV8("ProcessTaskOnStack.3/3 [func undefined]");
+      LogV8("ProcessTaskOnStack.3/3 [func undefined]", "call_id", task->call_id);
       GetCV(t_worker_thread_id)->NotifyAll();
       return;
     }
@@ -563,16 +563,15 @@ class ThreadStateManager {
     const v8::Local<v8::Function> call_function = call_function_candidate.As<v8::Function>();
 
     const v8::Local<v8::Value> v8_req_type = CppToV8(isolate, args.req_type);
+    const v8::Local<v8::Value> v8_call_id = CppToV8(isolate, task->call_id);
     const v8::Local<v8::Value> v8_target = CppToV8(isolate, args.target_id);
     const v8::Local<v8::Value> v8_member = CppToV8(isolate, args.member_id);
     const v8::Local<v8::Value> v8_args = CppToV8(isolate, args.args_json);
     const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
     const v8::Local<v8::Boolean> v8_serialize = v8::Boolean::New(isolate, args.serialize);
 
-    const std::string call_id = task->call_id;
-
-    constexpr size_t num_args = 6;
-    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_target, v8_member, v8_args, v8_async, v8_serialize};
+    constexpr size_t num_args = 7;
+    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_call_id, v8_target, v8_member, v8_args, v8_async, v8_serialize};
 
     LogV8("ProcessTaskOnStack.2/3 [before JS call]");
 
@@ -581,11 +580,11 @@ class ThreadStateManager {
 
     if (try_catch.HasCaught() || call_result.IsEmpty()) {
       v8::String::Utf8Value msg(isolate, try_catch.Exception());
-      LogV8("ProcessTaskOnStack.3/3 [failed with exception]", *msg ? *msg : "<unknown>");
+      LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg", *msg ? *msg : "<unknown>", "call_id", task->call_id);
       task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
     } else {
       task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
-      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID));
+      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID), "call_id", task->call_id);
     }
 
     GetCV(t_worker_thread_id)->NotifyAll();
