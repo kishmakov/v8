@@ -115,6 +115,10 @@ void LogV8(const char* event, Args&&... args) {
   log << std::endl << std::flush;
 }
 
+size_t fib(int n) { /* fib(41) < 10 */
+  return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
+}
+
 void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
   v8::debug::SetBlackBoxPausesPolicy(isolate, true);
   const v8::debug::BreakReasons internal{v8::debug::BreakReason::kInternalWait};
@@ -326,7 +330,7 @@ class ThreadStateManager {
       error_result.strValue = "Error: Worker resumed without result";
       return error_result;
     }
-    LogV8("PauseWorker.5/5 [resumed]");
+    LogV8("PauseWorker.5/5 [resumed]", "TSM", DumpState());
     return *result;
   }
 
@@ -577,6 +581,8 @@ class ThreadStateManager {
 
     v8::MaybeLocal<v8::Value> call_result =
       call_function->Call(v8_context, v8_context->Global(), num_args, argv);
+
+    task = TopTaskFor(t_worker_thread_id);
 
     if (try_catch.HasCaught() || call_result.IsEmpty()) {
       v8::String::Utf8Value msg(isolate, try_catch.Exception());
@@ -1065,10 +1071,6 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   if (value->IsArray() || value->IsPromise() || value->IsObject()) return V8TypeID::Object;
 
   return V8TypeID::Other;
-}
-
-size_t fib(int n) { /* fib(41) < 10 */
-  return n <= 5 ? n : fib(n - 1) + fib(n - 2) + fib(n - 3) + fib(n - 4) + fib(n - 5);
 }
 
 V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
