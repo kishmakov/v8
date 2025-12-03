@@ -1277,37 +1277,6 @@ BUILTIN(WaitCall) {
   return *result;
 }
 
-BUILTIN(PauseThread) {
-  // TODO: remove if not used
-  // int my_counter = ++counter;
-  // BuiltinsLog().lock(my_counter) << " PauseThread.1/3";
-  //
-  // HandleScope scope(isolate);
-  // v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-  //
-  // std::string thread_id = IdToString(args, isolate, 1);
-  // std::string target_id = IdToString(args, isolate, 2);
-  // std::string result_id = IdToString(args, isolate, 3);
-  //
-  // BuiltinsLog() << " thread=" << thread_id << " result=" << result_id << " target=" << target_id << std::endl;
-  //
-  // if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
-  //
-  // if (!GetDebugger(v8_isolate)->enabled()) {
-  //   GetDebugger(v8_isolate)->enable();
-  // }
-  //
-  // // Initiate internal silent wait pause via V8Debugger.
-  // BuiltinsLog().lock(my_counter) << " PauseThread.2/3" << std::endl;
-  // GetDebugger(v8_isolate)->pauseWorker(result_id, "call", target_id);
-  //
-  // BuiltinsLog().lock(my_counter) << " PauseThread.3/3";
-  // Handle<Object> result = UnshelveValue(isolate, result_id);
-  // BuiltinsLog() << std::endl;
-  // return *result;
-  return ReadOnlyRoots(isolate).undefined_value();
-}
-
 BUILTIN(WaitType) {
   int my_counter = ++counter;
   BuiltinsLog().lock(my_counter) << " WaitType.1/3";
@@ -1400,9 +1369,9 @@ BUILTIN(RegisterWorker) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
-BUILTIN(RunOnPaused) {
+BUILTIN(RunSync) {
   int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " RunOnPaused.1/4";
+  BuiltinsLog().lock(my_counter) << " RunSync.1/4";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1436,53 +1405,13 @@ BUILTIN(RunOnPaused) {
   }
 
   // Schedule the task to be executed on the destination thread
-  BuiltinsLog().lock(my_counter) << " RunOnPaused.2/4 [scheduling task]" << std::endl;
+  BuiltinsLog().lock(my_counter) << " RunSync.2/4 [scheduling task]" << std::endl;
   auto result = GetDebugger(v8_isolate)
-                    ->runOnPaused(thread_dst, call_id, std::move(req_type),
-                                  std::move(target_id), std::move(member_id),
-                                  std::move(args_json), is_async, serialize);
+                    ->runSync(thread_dst, call_id, std::move(req_type),
+                              std::move(target_id), std::move(member_id),
+                              std::move(args_json), is_async, serialize);
 
-  BuiltinsLog().lock(my_counter) << " RunOnPaused.4/4"
-    << " type=" << static_cast<int>(result.commTypeID)
-    << " json=" << result.commJSON
-    << std::endl;
-
-  return *DeserializeResult(isolate, result);
-}
-
-BUILTIN(RunOnCold) {
-  int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " RunOnCold.1/2";
-
-  HandleScope scope(isolate);
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-
-  std::string thread_src = IdToString(args, isolate, 1);
-  std::string thread_dst = IdToString(args, isolate, 2);
-  std::string call_id = IdToString(args, isolate, 3);
-
-  std::string req_type = IdToString(args, isolate, 4);
-  std::string target_id = IdToString(args, isolate, 5);
-  std::string member_id = IdToString(args, isolate, 6);
-  std::string str_args = IdToString(args, isolate, 7);
-  bool is_async = IdToBool(args, isolate, 8);
-
-  BuiltinsLog()
-    << " thread_src=" << thread_src
-    << " thread_dst=" << thread_dst
-    << " call_id=" << call_id
-    << " target=" << target_id
-    << " member=" << member_id
-    << " str_args=" << str_args
-    << std::endl;
-
-  auto result = GetDebugger(v8_isolate)
-                    ->runOnColdWorker(thread_src, thread_dst, call_id,
-                                      std::move(req_type), std::move(target_id),
-                                      std::move(member_id), std::move(str_args),
-                                      is_async);
-
-  BuiltinsLog().lock(my_counter) << " RunOnCold.2/2"
+  BuiltinsLog().lock(my_counter) << " RunSync.4/4"
     << " type=" << static_cast<int>(result.commTypeID)
     << " json=" << result.commJSON
     << std::endl;

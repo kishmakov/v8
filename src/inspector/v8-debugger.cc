@@ -2108,40 +2108,30 @@ bool V8Debugger::getPaused(const std::string& thread_id) const {
   return paused;
 }
 
-V8ExecutionResult V8Debugger::runOnPaused(
+V8ExecutionResult V8Debugger::runSync(
     const std::string& thread_dst, const std::string& call_id,
     std::string&& req_type, std::string&& target_id, std::string&& member_id,
     std::string&& args_json, bool is_async, bool serialize) const {
   DCHECK(enabled());
 
-  ThreadTaskArguments args{std::move(req_type), std::move(target_id), std::move(member_id),
-                           std::move(args_json), is_async, serialize};
+  ThreadTaskArguments args{std::move(req_type),
+                           std::move(target_id),
+                           std::move(member_id),
+                           std::move(args_json),
+                           is_async,
+                           serialize};
 
-  LogV8("runOnPaused", "thread_dst", thread_dst, "call_id", call_id, "TSM",
+  LogV8("runSynch", "thread_dst", thread_dst, "call_id", call_id, "TSM",
         ThreadStateManager::DumpState());
 
+  bool is_paused = ThreadStateManager::IsPaused(thread_dst);
 
   auto run = (t_worker_thread_id == "host")
-              ? ThreadStateManager::RunOnPausedWorker
-              : ThreadStateManager::RunOnPausedHost;
-  return run(m_isolate, t_worker_thread_id, thread_dst, call_id, std::move(args));
-}
-
-V8ExecutionResult V8Debugger::runOnColdWorker(const std::string& thread_src,
-                                              const std::string& thread_dst,
-                                              const std::string& call_id,
-                                              std::string&& req_type,
-                                              std::string&& target_id,
-                                              std::string&& member_id,
-                                              std::string&& args_json,
-                                              bool is_async) const {
-  if (!enabled()) return V8ExecutionResult{};
-  ThreadTaskArguments args{std::move(req_type), std::move(target_id),
-                           std::move(member_id), std::move(args_json),
-                           is_async, false}; // TODO serialize
-
-  return ThreadStateManager::RunOnColdWorker(m_isolate, thread_src, thread_dst,
-                                             call_id, std::move(args));
+                 ? (is_paused ? ThreadStateManager::RunOnPausedWorker
+                              : ThreadStateManager::RunOnColdWorker)
+                 : ThreadStateManager::RunOnPausedHost;
+  return run(m_isolate, t_worker_thread_id, thread_dst, call_id,
+             std::move(args));
 }
 
 void V8Debugger::registerWorkerThread(const std::string& thread_id, v8::Local<v8::Value> func) const {

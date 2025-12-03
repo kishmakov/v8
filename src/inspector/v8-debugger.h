@@ -112,19 +112,12 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void resumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) const;
   bool getPaused(const std::string& thread_id) const;
 
-  V8ExecutionResult runOnPaused(const std::string& thread_dst,
-                                const std::string& call_id,
-                                std::string&& req_type,
-                                std::string&& target_id,
-                                std::string&& member_id,
-                                std::string&& args_json, bool is_async, bool serialize) const;
-  V8ExecutionResult runOnColdWorker(const std::string& thread_src,
-                                    const std::string& thread_dst,
-                                    const std::string& call_id,
-                                    std::string&& req_type,
-                                    std::string&& target_id,
-                                    std::string&& member_id,
-                                    std::string&& args_json, bool is_async) const;
+  V8ExecutionResult runSync(const std::string& thread_dst,
+                             const std::string& call_id,
+                             std::string&& req_type,
+                             std::string&& target_id,
+                             std::string&& member_id,
+                             std::string&& args_json, bool is_async, bool serialize) const;
 
   // Must be called from the worker thread running JS (so that m_isolate matches
   // that thread).

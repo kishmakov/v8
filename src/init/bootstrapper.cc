@@ -2820,11 +2820,6 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                     isolate_->initial_object_prototype(),
                     Builtin::kWaitCall, 1, kDontAdapt);
 
-    InstallFunction(isolate_, global, "PauseThread", JS_PRIMITIVE_WRAPPER_TYPE,
-                JSPrimitiveWrapper::kHeaderSize, 0,
-                isolate_->initial_object_prototype(),
-                Builtin::kPauseThread, 1, kDontAdapt);
-
     InstallFunction(isolate_, global, "GetPaused", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
                     isolate_->initial_object_prototype(),
@@ -2836,15 +2831,10 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
         Builtin::kRegisterWorker, 1, kDontAdapt);
 
 
-    InstallFunction(isolate_, global, "RunOnCold", JS_PRIMITIVE_WRAPPER_TYPE,
+    InstallFunction(isolate_, global, "RunSync", JS_PRIMITIVE_WRAPPER_TYPE,
             JSPrimitiveWrapper::kHeaderSize, 0,
             isolate_->initial_object_prototype(),
-            Builtin::kRunOnCold, 1, kDontAdapt);
-
-    InstallFunction(isolate_, global, "RunOnPaused", JS_PRIMITIVE_WRAPPER_TYPE,
-                JSPrimitiveWrapper::kHeaderSize, 0,
-                isolate_->initial_object_prototype(),
-                Builtin::kRunOnPaused, 1, kDontAdapt);
+            Builtin::kRunSync, 1, kDontAdapt);
 
     InstallFunction(isolate_, global, "WaitType", JS_PRIMITIVE_WRAPPER_TYPE,
                     JSPrimitiveWrapper::kHeaderSize, 0,
