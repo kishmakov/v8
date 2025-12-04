@@ -323,7 +323,7 @@ class ThreadStateManager {
     LogV8("PauseWorker.4/5 [after PauseCurrentThreadRightNow]");
     auto result = TryPickResult(t_worker_thread_id, thread_dst, call_id);
     if (!result.has_value()) {
-      LogV8("PauseWorker.5/5 [ERROR: result not available after resume]", "TSM", DumpState());
+      LogV8("PauseWorker.5/5 [failed: result not available after resume]", "TSM", DumpState());
       // Return an error result instead of crashing
       V8ExecutionResult error_result;
       error_result.commTypeID = V8TypeID::String;
@@ -358,7 +358,7 @@ class ThreadStateManager {
     LogV8("RunOnPausedHost.1/4", "thread_src", thread_src, "call_id", call_id, "args", args);
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
     LogV8("RunOnPausedHost.2/4 [check paused]");
-    DCHECK(IsPaused(thread_src));
+    DCHECK(IsPaused(thread_dst));
     MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
@@ -2121,7 +2121,7 @@ V8ExecutionResult V8Debugger::runSync(
                            is_async,
                            serialize};
 
-  LogV8("runSynch", "thread_dst", thread_dst, "call_id", call_id, "TSM",
+  LogV8("runSync", "thread_dst", thread_dst, "call_id", call_id, "TSM",
         ThreadStateManager::DumpState());
 
   bool is_paused = ThreadStateManager::IsPaused(thread_dst);
