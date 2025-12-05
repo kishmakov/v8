@@ -1106,9 +1106,7 @@ int counter = 0;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 
-
-
-inline v8_inspector::V8Debugger* GetDebugger(v8::Isolate* isolate) {
+v8_inspector::V8Debugger* GetDebugger(v8::Isolate* isolate) {
   auto* inspector = debug::GetInspector(isolate); // TODO: what if null?
   return static_cast<v8_inspector::V8InspectorImpl*>(inspector)->debugger();
 }
