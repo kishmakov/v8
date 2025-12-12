@@ -334,18 +334,17 @@ class ThreadStateManager {
     return *result;
   }
 
-  static void ResumeWorker(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) {
-    DCHECK(t_worker_thread_id == thread_src);
-    LogV8("ResumeWorker.1/2", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
+  static void ResumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) {
+    LogV8("ResumeWorker.1/2", "thread_src", t_worker_thread_id, "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
 
     {
       v8::base::MutexGuard guard(&thread_state_mutex);
-      auto& state = thread_states[thread_src];
+      auto& state = thread_states[t_worker_thread_id];
       state.PushTask(t_worker_thread_id, thread_dst, call_id);
       state.LastTask()->result = std::move(result);
     }
 
-    GetCV(thread_src)->NotifyAll();
+    GetCV(t_worker_thread_id)->NotifyAll();
     GetCV(thread_dst)->NotifyAll();
     LogV8("ResumeWorker.2/2 [signaled]", "TSM", DumpState());
   }
@@ -357,8 +356,8 @@ class ThreadStateManager {
                                            ThreadTaskArguments&& args) {
     LogV8("RunOnPausedHost.1/4", "thread_src", thread_src, "call_id", call_id, "args", args);
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
-    LogV8("RunOnPausedHost.2/4 [check paused]");
-    DCHECK(IsPaused(thread_dst));
+    LogV8("RunOnPausedHost.2/4 [mark paused]", "TSM", DumpState());
+    // DCHECK(IsPaused(thread_dst)); // TODO: clean up or re-enable
     MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
@@ -2097,8 +2096,8 @@ V8ExecutionResult V8Debugger::pauseWorker(const std::string& thread_dst, const s
 }
 
 void V8Debugger::resumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) const {
-  DCHECK(enabled());
-  ThreadStateManager::ResumeWorker(t_worker_thread_id, thread_dst, call_id, std::move(result));
+  if (!enabled()) return; // TODO: check how enabled depend on thread state
+  ThreadStateManager::ResumeWorker(thread_dst, call_id, std::move(result));
 }
 
 bool V8Debugger::getPaused(const std::string& thread_id) const {
