@@ -1345,10 +1345,10 @@ BUILTIN(GetPaused) {
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
   std::string thread_id = IdToString(args, isolate, 1);
-  bool paused = GetDebugger(v8_isolate)->getPaused(thread_id);
+  std::string waiting_id = GetDebugger(v8_isolate)->getPaused(thread_id);
 
-  BuiltinsLog() << " thread=" << thread_id << " paused=" << paused << std::endl;
-  return *Utils::OpenHandle(*v8::Boolean::New(v8_isolate, paused));
+  BuiltinsLog() << " thread=" << thread_id << " waiting=" << waiting_id << std::endl;
+  return *Utils::OpenHandle(*v8::String::NewFromUtf8(v8_isolate, waiting_id.c_str()).ToLocalChecked());
 }
 
 BUILTIN(RegisterWorker) {
