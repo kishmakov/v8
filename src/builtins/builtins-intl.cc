@@ -1223,7 +1223,7 @@ BUILTIN(ResumeCall) {
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog() << " thread_id=" << thread_id << " result_id=" << result_ser.commResultID << std::endl;
+  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << result_ser.commResultID << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
   bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
@@ -1251,15 +1251,11 @@ BUILTIN(WaitCall) {
   std::string thread_dst = IdToString(args, isolate, 1);
   std::string call_id = IdToString(args, isolate, 2);
   std::string target_id = IdToString(args, isolate, 3);
-  std::string result_id = IdToString(args, isolate, 4);
 
   BuiltinsLog()
     << " thread_dst=" << thread_dst
     << " call_id=" << call_id
-    << " result_id=" << result_id
     << " target_id=" << target_id << std::endl;
-
-  if (result_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   if (!GetDebugger(v8_isolate)->enabled()) {
     GetDebugger(v8_isolate)->enable();
@@ -1323,8 +1319,8 @@ BUILTIN(ResumeType) {
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
   BuiltinsLog()
     << " thread_id=" << thread_id
-    << " call_id=" << call_id
-    << " result_id=" << result_ser.commResultID << std::endl;
+    << " call_id_1=" << call_id
+    << " call_id_2=" << result_ser.commResultID << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
   bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
@@ -1384,13 +1380,11 @@ BUILTIN(RunSync) {
   bool is_async = IdToBool(args, isolate, 7);
   bool serialize = IdToBool(args, isolate, 8);
 
-  std::string result_id = IdToString(args, isolate, 9);
 
   BuiltinsLog()
     << " thread_dst=" << thread_dst
     << " call_id=" << call_id
     << " req_type=" << req_type
-    << " result_id=" << result_id
     << " target_id=" << target_id
     << " member_id=" << member_id
     << " args_json=" << args_json
