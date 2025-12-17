@@ -1075,14 +1075,11 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
 
 V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
                                     const v8::Local<v8::Value> result_ser) {
-  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
+  DCHECK(result_ser->IsObject());
 
+  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
   v8::Local<v8::Value> value_value;
   const auto& context = isolate->GetCurrentContext();
-  if (!result_ser->IsObject()) {
-    LogV8("V8SerializeResult [failed to compute result as object]", "fib", fib(239));
-    return V8ExecutionResult{};
-  }
   if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
     LogV8("V8SerializeResult [failed to locate result_ser.CommValue]");
     return V8ExecutionResult{};
@@ -1113,9 +1110,10 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
     default: break;
   }
 
-  result.commResultID = GetOptionalStr(isolate, result_ser, "CommResultID");
-  result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
+  result.commCallID = GetOptionalStr(isolate, result_ser, "CommCallID");
   result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
+
+  result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
 
   return result;
 }

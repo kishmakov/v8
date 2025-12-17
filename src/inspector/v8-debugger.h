@@ -65,7 +65,7 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
 struct V8ExecutionResult {
   V8TypeID commTypeID = V8TypeID::Other;
-  std::string commResultID = "";
+  std::string commCallID = "";
   std::string commProxyID = "";
   std::string commJSON = "";
   std::string commProto = "";

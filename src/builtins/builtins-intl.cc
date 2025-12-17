@@ -1198,7 +1198,7 @@ Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResu
     default: break;
   }
 
-  InstallNonemptyInto(v8_isolate, result, "CommResultID", res.commResultID);
+  InstallNonemptyInto(v8_isolate, result, "CommCallID", res.commCallID);
   InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
   Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
   InstallInto(v8_isolate, result, "CommTypeID", typeCode);
@@ -1223,7 +1223,7 @@ BUILTIN(ResumeCall) {
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << result_ser.commResultID << std::endl;
+  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << result_ser.commCallID << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
   bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
@@ -1287,6 +1287,7 @@ BUILTIN(WaitType) {
     << " call_id=" << call_id
     << " target_id=" << target_id
     << std::endl;
+
   if (target_id.empty()) return *Utils::OpenHandle(*v8::Undefined(v8_isolate));
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1320,7 +1321,7 @@ BUILTIN(ResumeType) {
   BuiltinsLog()
     << " thread_id=" << thread_id
     << " call_id_1=" << call_id
-    << " call_id_2=" << result_ser.commResultID << std::endl;
+    << " call_id_2=" << result_ser.commCallID << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
   bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
