@@ -584,13 +584,18 @@ class ThreadStateManager {
       call_function->Call(v8_context, v8_context->Global(), num_args, argv);
 
     task = TopTaskFor(t_worker_thread_id);
-    task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
 
-    if (try_catch.HasCaught() || call_result.IsEmpty()) {
-      v8::String::Utf8Value msg(isolate, try_catch.Exception());
-      LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg", *msg ? *msg : "<unknown>", "call_id", task->call_id);
+    if (call_result.IsEmpty()) {
+      LogV8("ProcessTaskOnStack.3/3 [failed call result]", "call_id", task->call_id);
+      task->result = V8ExecutionResult{};
     } else {
-      LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID), "call_id", task->call_id);
+      task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
+      if (try_catch.HasCaught()) {
+        v8::String::Utf8Value msg(isolate, try_catch.Exception());
+        LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg", *msg ? *msg : "<unknown>", "call_id", task->call_id);
+      } else {
+        LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID), "call_id", task->call_id);
+      }
     }
 
     GetCV(t_worker_thread_id)->NotifyAll();

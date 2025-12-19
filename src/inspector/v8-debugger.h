@@ -67,6 +67,7 @@ struct V8ExecutionResult {
   V8TypeID commTypeID = V8TypeID::Other;
   std::string commCallID = "";
   std::string commProxyID = "";
+
   std::string commJSON = "";
   std::string commProto = "";
 
