@@ -55,9 +55,10 @@ enum class V8TypeID : int {
   Boolean = 2,
   String = 3,
   Number = 4,
-  Object = 101,
-  Function = 102,
-  Class = 103,
+  Object = 100,
+  Array = 101,
+  Function = 110,
+  Class = 111,
   Other = 1000,
 };
 
