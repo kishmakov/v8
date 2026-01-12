@@ -58,27 +58,31 @@ enum class V8TypeID : int {
   Object = 100,
   Array = 101,
   Function = 110,
-  Class = 111,
+  AsyncFunction = 111,
+  Class = 120,
+  Promise = 130,
   Other = 1000,
 };
 
 V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
-struct V8ExecutionResult {
-  V8TypeID commTypeID = V8TypeID::Other;
-  std::string commCallID = "";
-  std::string commProxyID = "";
+typedef std::string V8ExecutionResult;
 
-  std::string commJSON = "";
-  std::string commProto = "";
+// struct V8ExecutionResult {
+//   V8TypeID commTypeID = V8TypeID::Other;
+//   std::string commCallID = "";
+//   std::string commProxyID = "";
+//
+//   std::string commJSON = "";
+//   std::string commProto = "";
+//
+//   bool boolValue = false;
+//   std::string strValue = "";
+//   double numValue = 0.0;
+// };
 
-  bool boolValue = false;
-  std::string strValue = "";
-  double numValue = 0.0;
-};
-
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
-                                    v8::Local<v8::Value> value);
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> value);
+v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8ExecutionResult& value);
 
 class V8Debugger : public v8::debug::DebugDelegate,
                    public v8::debug::AsyncEventDelegate {

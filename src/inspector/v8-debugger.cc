@@ -32,6 +32,7 @@
 #include "src/inspector/v8-runtime-agent-impl.h"
 #include "src/inspector/v8-stack-trace-impl.h"
 #include "src/inspector/v8-value-utils.h"
+#include "v8-json.h"
 
 namespace v8_inspector {
 
@@ -109,7 +110,7 @@ void LogV8(const char* event, Args&&... args) {
   if (std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", std::localtime(&now))) {
     log << "[" << timebuf << "] ";
   }
-  std::string thread_marker = t_worker_thread_id.empty() ? "<thread init>" : t_worker_thread_id;
+  std::string thread_marker = t_worker_thread_id.empty() ? "?????" : t_worker_thread_id;
   log << thread_marker  << " " << event;
   PairPrinter{log}(std::forward<Args>(args)...);
   log << std::endl << std::flush;
@@ -125,28 +126,28 @@ void PauseCurrentThreadRightNow(v8::Isolate* isolate) {
   v8::debug::BreakRightNow(isolate, internal);
 }
 
-std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
-  v8::HandleScope handle_scope(isolate);
-  if (!value->IsObject()) return "";
-  v8::Local<v8::Object> obj = value.As<v8::Object>();
-  v8::Local<v8::String> ctor = obj->GetConstructorName();
-  v8::String::Utf8Value utf8(isolate, ctor);
-  return *utf8 ? *utf8 : "";
-}
-
-std::string GetOptionalStr(v8::Isolate* isolate,
-                           const v8::Local<v8::Value> result_ser,
-                           const std::string& key_str) {
-  v8::Local<v8::String> key = v8::String::NewFromUtf8(isolate, key_str.c_str()).ToLocalChecked();
-
-  v8::Local<v8::Value> value;
-  const auto& context = isolate->GetCurrentContext();
-  if (!result_ser.As<v8::Object>()->Get(context, key).ToLocal(&value)) return "";
-  if (!value->IsString()) return "";
-
-  v8::String::Utf8Value utf8(isolate, value);
-  return *utf8;
-}
+// std::string SafeCtorName(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+//   v8::HandleScope handle_scope(isolate);
+//   if (!value->IsObject()) return "";
+//   v8::Local<v8::Object> obj = value.As<v8::Object>();
+//   v8::Local<v8::String> ctor = obj->GetConstructorName();
+//   v8::String::Utf8Value utf8(isolate, ctor);
+//   return *utf8 ? *utf8 : "";
+// }
+//
+// std::string GetOptionalStr(v8::Isolate* isolate,
+//                            const v8::Local<v8::Value> result_ser,
+//                            const std::string& key_str) {
+//   v8::Local<v8::String> key = v8::String::NewFromUtf8(isolate, key_str.c_str()).ToLocalChecked();
+//
+//   v8::Local<v8::Value> value;
+//   const auto& context = isolate->GetCurrentContext();
+//   if (!result_ser.As<v8::Object>()->Get(context, key).ToLocal(&value)) return "";
+//   if (!value->IsString()) return "";
+//
+//   v8::String::Utf8Value utf8(isolate, value);
+//   return *utf8;
+// }
 
 class PokeTask : public v8::Task {
  public:
@@ -198,7 +199,7 @@ struct ThreadTask {
   const std::string call_id;
 
   std::optional<ThreadTaskArguments> args;
-  std::optional<V8ExecutionResult> result = std::nullopt;
+  std::optional<std::string> result = std::nullopt;
   bool is_processing = false;
 };
 
@@ -326,15 +327,15 @@ class ThreadStateManager {
       LogV8("PauseWorker.5/5 [failed: result not available after resume]", "TSM", DumpState());
       // Return an error result instead of crashing
       V8ExecutionResult error_result;
-      error_result.commTypeID = V8TypeID::String;
-      error_result.strValue = "Error: Worker resumed without result";
+      // error_result.commTypeID = V8TypeID::String;
+      error_result = "'Error: Worker resumed without result'"; // TODO: properly set this value
       return error_result;
     }
     LogV8("PauseWorker.5/5 [resumed]", "TSM", DumpState());
     return *result;
   }
 
-  static void ResumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) {
+  static void ResumeWorker(const std::string& thread_dst, const std::string& call_id, std::string&& result) {
     LogV8("ResumeWorker.1/2", "thread_src", t_worker_thread_id, "thread_dst", thread_dst, "call_id", call_id, "TSM", DumpState());
 
     {
@@ -361,7 +362,7 @@ class ThreadStateManager {
     MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
-    LogV8("RunOnPausedHost.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
+    LogV8("RunOnPausedHost.4/4 [computed]", "result", result);
     return result;
   }
 
@@ -377,7 +378,7 @@ class ThreadStateManager {
     MarkPaused(t_worker_thread_id, thread_dst, call_id);
     LogV8("RunOnPausedWorker.3/4 [mark paused]", "TSM", DumpState());
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
-    LogV8("RunOnPausedWorker.4/4 [computed]", "type", static_cast<int>(result.commTypeID));
+    LogV8("RunOnPausedWorker.4/4 [computed]", "result", result);
     return result;
   }
 
@@ -418,7 +419,7 @@ class ThreadStateManager {
 
     LogV8("RunOnColdWorker.4/5 [phony task posted]");
     V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
-    LogV8("RunOnColdWorker.5/5 [computed]", "type", static_cast<int>(result.commTypeID));
+    LogV8("RunOnColdWorker.5/5 [computed]", "result", result);
 
     return result;
   }
@@ -509,7 +510,7 @@ class ThreadStateManager {
     LogV8("WaitForTask.2/3", "TSM", DumpState());
     auto result = TryPickResult(thread_src, thread_dst, call_id);
     DCHECK(result.has_value());
-    LogV8("WaitForTask.3/3 [computed]", "type", static_cast<int>(result->commTypeID), "TSM", DumpState());
+    LogV8("WaitForTask.3/3 [computed]", "result", *result, "TSM", DumpState());
     return *result;
   }
 
@@ -594,7 +595,7 @@ class ThreadStateManager {
         v8::String::Utf8Value msg(isolate, try_catch.Exception());
         LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg", *msg ? *msg : "<unknown>", "call_id", task->call_id);
       } else {
-        LogV8("ProcessTaskOnStack.3/3", "type", static_cast<int>(task->result->commTypeID), "call_id", task->call_id);
+        LogV8("ProcessTaskOnStack.3/3", "result", *task->result, "call_id", task->call_id);
       }
     }
 
@@ -1078,49 +1079,86 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeID::Other;
 }
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate,
-                                    const v8::Local<v8::Value> result_ser) {
-  DCHECK(result_ser->IsObject());
+V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, const v8::Local<v8::Value> value) {
+  v8::MaybeLocal<v8::String> maybe_json_string = v8::JSON::Stringify(isolate->GetCurrentContext(), value);
 
-  v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate, "CommValue");
-  v8::Local<v8::Value> value_value;
-  const auto& context = isolate->GetCurrentContext();
-  if (!result_ser.As<v8::Object>()->Get(context, value_key).ToLocal(&value_value)) {
-    LogV8("V8SerializeResult [failed to locate result_ser.CommValue]");
-    return V8ExecutionResult{};
+  v8::Local<v8::String> json_string;
+  std::string result = "";
+
+  if (maybe_json_string.ToLocal(&json_string)) {
+    v8::String::Utf8Value utf8(isolate, json_string);
+    result = *utf8 ? *utf8 : "";
   }
-
-  v8::HandleScope handle_scope(isolate);
-
-  V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate, value_value),
-                           .commProto = SafeCtorName(isolate, value_value)};
-
-  switch (result.commTypeID) {
-    case V8TypeID::Boolean: {
-      result.boolValue = value_value.As<v8::Boolean>()->Value();
-      break;
-    }
-
-    case V8TypeID::String: {
-      v8::String::Utf8Value utf8(isolate, value_value);
-      if (*utf8) result.strValue.assign(*utf8, utf8.length());
-      break;
-    }
-
-    case V8TypeID::Number: {
-      result.numValue = value_value->NumberValue(context).FromMaybe(0.0);
-      break;
-    }
-
-    default: break;
-  }
-
-  result.commCallID = GetOptionalStr(isolate, result_ser, "CommCallID");
-  result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
-
-  result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
 
   return result;
+  // DCHECK(result_ser->IsObject());
+  //
+  // v8::Local<v8::String> value_key = v8::String::NewFromUtf8Literal(isolate,
+  // "CommValue"); v8::Local<v8::Value> value_value; const auto& context =
+  // isolate->GetCurrentContext(); if
+  // (!result_ser.As<v8::Object>()->Get(context,
+  // value_key).ToLocal(&value_value)) {
+  //   LogV8("V8SerializeResult [failed to locate result_ser.CommValue]");
+  //   return V8ExecutionResult{};
+  // }
+  //
+  // v8::HandleScope handle_scope(isolate);
+  //
+  // V8ExecutionResult result{.commTypeID = V8ValueTypeCode(isolate,
+  // value_value),
+  //                          .commProto = SafeCtorName(isolate, value_value)};
+  //
+  // switch (result.commTypeID) {
+  //   case V8TypeID::Boolean: {
+  //     result.boolValue = value_value.As<v8::Boolean>()->Value();
+  //     break;
+  //   }
+  //
+  //   case V8TypeID::String: {
+  //     v8::String::Utf8Value utf8(isolate, value_value);
+  //     if (*utf8) result.strValue.assign(*utf8, utf8.length());
+  //     break;
+  //   }
+  //
+  //   case V8TypeID::Number: {
+  //     result.numValue = value_value->NumberValue(context).FromMaybe(0.0);
+  //     break;
+  //   }
+  //
+  //   default: break;
+  // }
+  //
+  // result.commCallID = GetOptionalStr(isolate, result_ser, "CommCallID");
+  // result.commProxyID = GetOptionalStr(isolate, result_ser, "CommProxyID");
+  //
+  // result.commJSON = GetOptionalStr(isolate, result_ser, "CommJSON");
+  //
+  // return result;
+}
+
+v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8ExecutionResult& json) {
+  v8::EscapableHandleScope handle_scope(isolate);
+
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+  v8::MaybeLocal<v8::String> maybe_json_string = v8::String::NewFromUtf8(
+    isolate,
+    json.c_str(),
+    v8::NewStringType::kNormal,
+    static_cast<int>(json.size())
+  );
+
+  v8::Local<v8::String> json_string;
+  if (!maybe_json_string.ToLocal(&json_string)) {
+    return handle_scope.Escape(v8::Undefined(isolate));
+  }
+
+  v8::Local<v8::Value> value;
+  if (!v8::JSON::Parse(context, json_string).ToLocal(&value)) {
+     return handle_scope.Escape(v8::Undefined(isolate));
+  }
+
+  return handle_scope.Escape(value);
 }
 
 void V8Debugger::handleProgramBreak(
@@ -2100,8 +2138,7 @@ V8ExecutionResult V8Debugger::pauseWorker(const std::string& thread_dst, const s
   return ThreadStateManager::PauseWorker(m_isolate, thread_dst, call_id);
 }
 
-void V8Debugger::resumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) const {
-  if (!enabled()) return; // TODO: check how enabled depend on thread state
+void V8Debugger::resumeWorker(const std::string& thread_dst, const std::string& call_id, std::string&& result) const {
   ThreadStateManager::ResumeWorker(thread_dst, call_id, std::move(result));
 }
 

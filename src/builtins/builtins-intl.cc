@@ -1148,71 +1148,71 @@ bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
   return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
 }
 
-void InstallInto(v8::Isolate* isolate, Handle<Object> object, const std::string& key, Local<Value> value) {
-  Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
-  Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
-  dst->Set(isolate->GetCurrentContext(), v8_key, value).Check();
-}
+// void InstallInto(v8::Isolate* isolate, Handle<Object> object, const std::string& key, Local<Value> value) {
+//   Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
+//   Local<v8::Object> dst = Local<v8::Object>::Cast(Utils::ToLocal(object));
+//   dst->Set(isolate->GetCurrentContext(), v8_key, value).Check();
+// }
 
-void InstallNonemptyInto(v8::Isolate* isolate, Handle<Object> dst, const std::string& key, const std::string& value) {
-  if (value.empty()) return;
-  auto v8_value = v8::String::NewFromUtf8(isolate, value.c_str());
-  InstallInto(isolate, dst, key, v8_value.ToLocalChecked());
-}
+// void InstallNonemptyInto(v8::Isolate* isolate, Handle<Object> dst, const std::string& key, const std::string& value) {
+//   if (value.empty()) return;
+//   auto v8_value = v8::String::NewFromUtf8(isolate, value.c_str());
+//   InstallInto(isolate, dst, key, v8_value.ToLocalChecked());
+// }
 
-Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult res) {
-  v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-  Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
-
-  const std::string keySV = "simpleValue";
-
-  switch (res.commTypeID) {
-    case v8_inspector::V8TypeID::Undefined: {
-      InstallInto(v8_isolate, result, keySV, v8::Undefined(v8_isolate));
-      break;
-    }
-
-    case v8_inspector::V8TypeID::Null: {
-      InstallInto(v8_isolate, result, keySV, v8::Null(v8_isolate));
-      break;
-    }
-
-    case v8_inspector::V8TypeID::Boolean: {
-      auto value = v8::Boolean::New(v8_isolate, res.boolValue);
-      InstallInto(v8_isolate, result, keySV, value);
-      break;
-    }
-
-    case v8_inspector::V8TypeID::String: {
-      auto value = v8::String::NewFromUtf8(v8_isolate, res.strValue.c_str());
-      InstallInto(v8_isolate, result, keySV, value.ToLocalChecked());
-      break;
-    }
-
-    case v8_inspector::V8TypeID::Number: {
-      auto value = v8::Number::New(v8_isolate, res.numValue);
-      InstallInto(v8_isolate, result, keySV, value);
-      break;
-    }
-
-    default: break;
-  }
-
-  InstallNonemptyInto(v8_isolate, result, "CommCallID", res.commCallID);
-  InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
-  Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
-  InstallInto(v8_isolate, result, "CommTypeID", typeCode);
-  InstallNonemptyInto(v8_isolate, result, "CommJSON", res.commJSON);
-  InstallNonemptyInto(v8_isolate, result, "CommProtoID", res.commProto);
-
-  return result;
-}
+// Handle<Object> DeserializeResult(Isolate* isolate, v8_inspector::V8ExecutionResult json) {
+  // v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
+  // Handle<Object> result = isolate->factory()->NewJSObject(isolate->object_function());
+  //
+  // const std::string keySV = "simpleValue";
+  //
+  // switch (res.commTypeID) {
+  //   case v8_inspector::V8TypeID::Undefined: {
+  //     InstallInto(v8_isolate, result, keySV, v8::Undefined(v8_isolate));
+  //     break;
+  //   }
+  //
+  //   case v8_inspector::V8TypeID::Null: {
+  //     InstallInto(v8_isolate, result, keySV, v8::Null(v8_isolate));
+  //     break;
+  //   }
+  //
+  //   case v8_inspector::V8TypeID::Boolean: {
+  //     auto value = v8::Boolean::New(v8_isolate, res.boolValue);
+  //     InstallInto(v8_isolate, result, keySV, value);
+  //     break;
+  //   }
+  //
+  //   case v8_inspector::V8TypeID::String: {
+  //     auto value = v8::String::NewFromUtf8(v8_isolate, res.strValue.c_str());
+  //     InstallInto(v8_isolate, result, keySV, value.ToLocalChecked());
+  //     break;
+  //   }
+  //
+  //   case v8_inspector::V8TypeID::Number: {
+  //     auto value = v8::Number::New(v8_isolate, res.numValue);
+  //     InstallInto(v8_isolate, result, keySV, value);
+  //     break;
+  //   }
+  //
+  //   default: break;
+  // }
+  //
+  // InstallNonemptyInto(v8_isolate, result, "CommCallID", res.commCallID);
+  // InstallNonemptyInto(v8_isolate, result, "CommProxyID", res.commProxyID);
+  // Local<Value> typeCode = v8::Int32::New(v8_isolate, static_cast<int>(res.commTypeID));
+  // InstallInto(v8_isolate, result, "CommTypeID", typeCode);
+  // InstallNonemptyInto(v8_isolate, result, "CommJSON", res.commJSON);
+  // InstallNonemptyInto(v8_isolate, result, "CommProtoID", res.commProto);
+  //
+  // return result;
+// }
 
 } // namespace
 
 BUILTIN(ResumeCall) {
   int my_counter = ++counter;
-  BuiltinsLog().lock(my_counter) << " ResumeCall.1/4";
+  BuiltinsLog().lock(my_counter) << " ResumeCall.1/3";
 
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
@@ -1221,24 +1221,16 @@ BUILTIN(ResumeCall) {
   std::string call_id = IdToString(args, isolate, 2);
   std::string target_id = IdToString(args, isolate, 3);
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
-
-  auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << result_ser.commCallID << std::endl;
+  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << call_id << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
-  bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
-  BuiltinsLog() << " value_saved=" << value_saved << std::endl;
+  auto result_str = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
 
-  BuiltinsLog().lock(my_counter) << " ResumeCall.2/4" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_ser));
-  BuiltinsLog().lock(my_counter) << " ResumeCall.3/4" << std::endl;
+  BuiltinsLog().lock(my_counter) << " ResumeCall.2/3" << std::endl;
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_str));
+  BuiltinsLog().lock(my_counter) << " ResumeCall.3/3" << std::endl;
 
-  auto result = value_saved
-                    ? Tagged<Object>(ReadOnlyRoots(isolate).true_value())
-                    : Tagged<Object>(ReadOnlyRoots(isolate).false_value());
-
-  BuiltinsLog().lock(my_counter) << " ResumeCall.4/4" << std::endl;
-  return result;
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 BUILTIN(WaitCall) {
@@ -1266,9 +1258,9 @@ BUILTIN(WaitCall) {
   auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
-  Handle<Object> result = DeserializeResult(isolate, result_struct);
+  v8::Local<v8::Value> result = v8_inspector::V8DeserializeResult(v8_isolate, result_struct);
   BuiltinsLog() << std::endl;
-  return *result;
+  return *Utils::OpenHandle(*result);
 }
 
 BUILTIN(WaitType) {
@@ -1300,9 +1292,9 @@ BUILTIN(WaitType) {
   auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitType.3/3";
-  Handle<Object> result = DeserializeResult(isolate, result_struct);
+  auto result = v8_inspector::V8DeserializeResult(v8_isolate, result_struct);
   BuiltinsLog() << std::endl;
-  return *result;
+  return *Utils::OpenHandle(*result);
 }
 
 BUILTIN(ResumeType) {
@@ -1318,14 +1310,11 @@ BUILTIN(ResumeType) {
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
 
   auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
-  BuiltinsLog()
-    << " thread_id=" << thread_id
-    << " call_id_1=" << call_id
-    << " call_id_2=" << result_ser.commCallID << std::endl;
+  BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << call_id << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
-  bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
-  BuiltinsLog() << " value_saved=" << value_saved << std::endl;
+  // bool value_saved = static_cast<int>(result_ser.commTypeID) < 100; // Logic from ShelveValue
+  // BuiltinsLog() << " value_saved=" << value_saved << std::endl;
 
   // Resume the paused thread via debugger (same path as ResumeCall).
   BuiltinsLog().lock(my_counter) << " ResumeType.2/3" << std::endl;
@@ -1404,12 +1393,13 @@ BUILTIN(RunSync) {
                               std::move(target_id), std::move(member_id),
                               std::move(args_json), is_async, serialize);
 
-  BuiltinsLog().lock(my_counter) << " RunSync.4/4"
-    << " type=" << static_cast<int>(result.commTypeID)
-    << " json=" << result.commJSON
-    << std::endl;
+  // BuiltinsLog().lock(my_counter) << " RunSync.4/4"
+  //   << " type=" << static_cast<int>(result.commTypeID)
+  //   << " json=" << result.commJSON
+  //   << std::endl;
 
-  return *DeserializeResult(isolate, result);
+  auto lv = v8_inspector::V8DeserializeResult(v8_isolate, result);
+  return *Utils::OpenHandle(*lv);
 }
 
 BUILTIN(CheckObjectFullyConstructed) {
