@@ -66,8 +66,6 @@ enum class V8TypeID : int {
 
 V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value);
 
-typedef std::string V8ExecutionResult;
-
 // struct V8ExecutionResult {
 //   V8TypeID commTypeID = V8TypeID::Other;
 //   std::string commCallID = "";
@@ -81,8 +79,9 @@ typedef std::string V8ExecutionResult;
 //   double numValue = 0.0;
 // };
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, v8::Local<v8::Value> value);
-v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8ExecutionResult& value);
+typedef std::string SerializedValue;
+SerializedValue SerialiseValueToStr(v8::Isolate* isolate, v8::Local<v8::Value> value);
+v8::Local<v8::Value> DeserializeStrToV8(v8::Isolate* isolate, const SerializedValue& value);
 
 class V8Debugger : public v8::debug::DebugDelegate,
                    public v8::debug::AsyncEventDelegate {
@@ -114,17 +113,17 @@ class V8Debugger : public v8::debug::DebugDelegate,
   void stepOverStatement(int targetContextGroupId);
   void stepOutOfFunction(int targetContextGroupId);
 
-  V8ExecutionResult pauseWorker(const std::string& thread_dst, const std::string& call_id) const;
-  void resumeWorker(const std::string& thread_dst, const std::string& call_id, V8ExecutionResult&& result) const;
+  SerializedValue pauseWorker(const std::string& thread_dst, const std::string& call_id) const;
+  void resumeWorker(const std::string& thread_dst, const std::string& call_id, SerializedValue&& result) const;
   // Returns id of the thread, which is being waited by thread_id
   std::string getPaused(const std::string& thread_id) const;
 
-  V8ExecutionResult runSync(const std::string& thread_dst,
+  SerializedValue runSync(const std::string& thread_dst,
                              const std::string& call_id,
                              std::string&& req_type,
                              std::string&& target_id,
                              std::string&& member_id,
-                             std::string&& args_json) const;
+                             SerializedValue&& args_json) const;
 
   // Must be called from the worker thread running JS (so that m_isolate matches
   // that thread).

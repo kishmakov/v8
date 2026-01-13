@@ -1224,7 +1224,7 @@ BUILTIN(ResumeCall) {
   BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << call_id << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
-  auto result_str = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
+  auto result_str = v8_inspector::SerialiseValueToStr(v8_isolate, result_v8);
 
   BuiltinsLog().lock(my_counter) << " ResumeCall.2/3" << std::endl;
   GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_str));
@@ -1258,7 +1258,7 @@ BUILTIN(WaitCall) {
   auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitCall.3/3";
-  v8::Local<v8::Value> result = v8_inspector::V8DeserializeResult(v8_isolate, result_struct);
+  v8::Local<v8::Value> result = v8_inspector::DeserializeStrToV8(v8_isolate, result_struct);
   BuiltinsLog() << std::endl;
   return *Utils::OpenHandle(*result);
 }
@@ -1292,7 +1292,7 @@ BUILTIN(WaitType) {
   auto result_struct = GetDebugger(v8_isolate)->pauseWorker(thread_dst, call_id);
 
   BuiltinsLog().lock(my_counter) << " WaitType.3/3";
-  auto result = v8_inspector::V8DeserializeResult(v8_isolate, result_struct);
+  auto result = v8_inspector::DeserializeStrToV8(v8_isolate, result_struct);
   BuiltinsLog() << std::endl;
   return *Utils::OpenHandle(*result);
 }
@@ -1309,7 +1309,7 @@ BUILTIN(ResumeType) {
   std::string target_id = IdToString(args, isolate, 3);
   Local<Value> result_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 4));
 
-  auto result_ser = v8_inspector::V8SerializeResult(v8_isolate, result_v8);
+  auto result_str = v8_inspector::SerialiseValueToStr(v8_isolate, result_v8);
   BuiltinsLog() << " thread_id=" << thread_id << " call_id=" << call_id << std::endl;
 
   // bool value_saved = ShelveValue(std::move(result_ser));
@@ -1318,7 +1318,7 @@ BUILTIN(ResumeType) {
 
   // Resume the paused thread via debugger (same path as ResumeCall).
   BuiltinsLog().lock(my_counter) << " ResumeType.2/3" << std::endl;
-  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_ser));
+  GetDebugger(v8_isolate)->resumeWorker(thread_id, call_id, std::move(result_str));
   BuiltinsLog().lock(my_counter) << " ResumeType.3/3" << std::endl;
 
   return ReadOnlyRoots(isolate).undefined_value();
@@ -1369,7 +1369,8 @@ BUILTIN(RunSync) {
   std::string call_id = IdToString(args, isolate, 3);
   std::string function_id = IdToString(args, isolate, 4);
   std::string this_id = IdToString(args, isolate, 5);
-  std::string args_json = IdToString(args, isolate, 6);
+  Local<Value> args_v8 = Utils::ToLocal(args.atOrUndefined(isolate, 6));
+  auto args_json = v8_inspector::SerialiseValueToStr(v8_isolate, args_v8);
   // bool is_async = IdToBool(args, isolate, 7);
   // bool serialize = IdToBool(args, isolate, 8);
 
@@ -1396,12 +1397,15 @@ BUILTIN(RunSync) {
                               std::move(function_id), std::move(this_id),
                               std::move(args_json));
 
+  BuiltinsLog().lock(my_counter) << " RunSync.3/4 result=" << result  << std::endl;
+
   // BuiltinsLog().lock(my_counter) << " RunSync.4/4"
   //   << " type=" << static_cast<int>(result.commTypeID)
   //   << " json=" << result.commJSON
   //   << std::endl;
 
-  auto lv = v8_inspector::V8DeserializeResult(v8_isolate, result);
+  auto lv = v8_inspector::DeserializeStrToV8(v8_isolate, result);
+  BuiltinsLog().lock(my_counter) << " RunSync.4/4" << std::endl;
   return *Utils::OpenHandle(*lv);
 }
 

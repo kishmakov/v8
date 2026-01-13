@@ -199,7 +199,7 @@ struct ThreadTask {
   const std::string call_id;
 
   std::optional<ThreadTaskArguments> args;
-  std::optional<V8ExecutionResult> result = std::nullopt;
+  std::optional<SerializedValue> result = std::nullopt;
   bool is_processing = false;
 };
 
@@ -238,13 +238,13 @@ struct ThreadPauseState {
     return &tasks.back();
   }
 
-  V8ExecutionResult PopResult() {
+  SerializedValue PopResult() {
     DCHECK(!tasks.empty());
 
     auto& last_task = tasks.back();
     DCHECK(last_task.result.has_value());
 
-    V8ExecutionResult result = std::move(*last_task.result);
+    SerializedValue result = std::move(*last_task.result);
     tasks.pop_back();
     return result;
   }
@@ -306,7 +306,7 @@ class ThreadStateManager {
     }
   }
 
-  static V8ExecutionResult PauseWorker(v8::Isolate* isolate, const std::string& thread_dst, const std::string& call_id) {
+  static SerializedValue PauseWorker(v8::Isolate* isolate, const std::string& thread_dst, const std::string& call_id) {
     DCHECK(thread_dst != t_worker_thread_id);
     LogV8("PauseWorker.1/5", "thread_dst", thread_dst, "call_id", call_id);
 
@@ -326,7 +326,7 @@ class ThreadStateManager {
     if (!result.has_value()) {
       LogV8("PauseWorker.5/5 [failed: result not available after resume]", "TSM", DumpState());
       // Return an error result instead of crashing
-      V8ExecutionResult error_result;
+      SerializedValue error_result;
       // error_result.commTypeID = V8TypeID::String;
       error_result = "'Error: Worker resumed without result'"; // TODO: properly set this value
       return error_result;
@@ -350,7 +350,7 @@ class ThreadStateManager {
     LogV8("ResumeWorker.2/2 [signaled]", "TSM", DumpState());
   }
 
-  static V8ExecutionResult RunOnPausedHost(v8::Isolate* isolate,
+  static SerializedValue RunOnPausedHost(v8::Isolate* isolate,
                                            const std::string& thread_src,
                                            const std::string& thread_dst,
                                            const std::string& call_id,
@@ -361,12 +361,12 @@ class ThreadStateManager {
     // DCHECK(Paused(thread_dst)); // TODO: clean up or re-enable
     MarkPaused(thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.3/4 [waiting for task]");
-    V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
+    SerializedValue result = WaitForTask(isolate, thread_src, thread_dst, call_id);
     LogV8("RunOnPausedHost.4/4 [computed]", "result", result);
     return result;
   }
 
-  static V8ExecutionResult RunOnPausedWorker(v8::Isolate* isolate,
+  static SerializedValue RunOnPausedWorker(v8::Isolate* isolate,
                                              const std::string& thread_src,
                                              const std::string& thread_dst,
                                              const std::string& call_id,
@@ -377,12 +377,12 @@ class ThreadStateManager {
     LogV8("RunOnPausedWorker.2/4 [task scheduled]");
     MarkPaused(t_worker_thread_id, thread_dst, call_id);
     LogV8("RunOnPausedWorker.3/4 [mark paused]", "TSM", DumpState());
-    V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
+    SerializedValue result = WaitForTask(isolate, thread_src, thread_dst, call_id);
     LogV8("RunOnPausedWorker.4/4 [computed]", "result", result);
     return result;
   }
 
-  static V8ExecutionResult RunOnColdWorker(v8::Isolate* isolate,
+  static SerializedValue RunOnColdWorker(v8::Isolate* isolate,
                                            const std::string& thread_src,
                                            const std::string& thread_dst,
                                            const std::string& call_id,
@@ -394,7 +394,7 @@ class ThreadStateManager {
 
     if (!target_isolate) {
       LogV8("RunOnColdWorker.5/5 [failed to find isolate]");
-      return V8ExecutionResult{};
+      return SerializedValue{};
     }
 
     ScheduleTask(thread_src, thread_dst, call_id, std::move(args));
@@ -418,7 +418,7 @@ class ThreadStateManager {
     runner->PostTask(std::make_unique<PokeTask>(target_isolate));
 
     LogV8("RunOnColdWorker.4/5 [phony task posted]");
-    V8ExecutionResult result = WaitForTask(isolate, thread_src, thread_dst, call_id);
+    SerializedValue result = WaitForTask(isolate, thread_src, thread_dst, call_id);
     LogV8("RunOnColdWorker.5/5 [computed]", "result", result);
 
     return result;
@@ -475,7 +475,7 @@ class ThreadStateManager {
     return other_state.TopIsReady(top.awaited_call_id);
   }
 
-  static std::optional<V8ExecutionResult> TryPickResult(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
+  static std::optional<SerializedValue> TryPickResult(const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     v8::base::MutexGuard guard(&thread_state_mutex);
     auto& state_src = thread_states[thread_src];
     if (state_src.pauses.empty()) return std::nullopt;
@@ -499,7 +499,7 @@ class ThreadStateManager {
     thread_states[thread_dst].PushTask(thread_src, thread_dst, call_id, std::move(args));
   }
 
-  static V8ExecutionResult WaitForTask(v8::Isolate* isolate, const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
+  static SerializedValue WaitForTask(v8::Isolate* isolate, const std::string& thread_src, const std::string& thread_dst, const std::string& call_id) {
     LogV8("WaitForTask.1/3", "thread_src", thread_src, "thread_dst", thread_dst, "call_id", call_id);
     GetCV(thread_dst)->NotifyAll();
     if (PausedFor(thread_src).empty()) {
@@ -572,7 +572,7 @@ class ThreadStateManager {
     const v8::Local<v8::Value> v8_call_id = CppToV8(isolate, task->call_id);
     const v8::Local<v8::Value> v8_function = CppToV8(isolate, args.function_id);
     const v8::Local<v8::Value> v8_this = CppToV8(isolate, args.this_id);
-    const v8::Local<v8::Value> v8_args = CppToV8(isolate, args.args_json);
+    const v8::Local<v8::Value> v8_args = DeserializeStrToV8(isolate, args.args_json);
     // const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
     // const v8::Local<v8::Boolean> v8_serialize = v8::Boolean::New(isolate, args.serialize);
 
@@ -600,9 +600,9 @@ class ThreadStateManager {
               *msg ? *msg : "<unknown>", "stack", stack_str, "call_id", task->call_id);
       }
       LogV8("ProcessTaskOnStack.3/3 [failed call result]", "call_id", task->call_id);
-      task->result = V8ExecutionResult{};
+      task->result = SerializedValue{};
     } else {
-      task->result = V8SerializeResult(isolate, call_result.ToLocalChecked());
+      task->result = SerialiseValueToStr(isolate, call_result.ToLocalChecked());
       if (try_catch.HasCaught()) {
         v8::String::Utf8Value msg(isolate, try_catch.Exception());
         LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg", *msg ? *msg : "<unknown>", "call_id", task->call_id);
@@ -1091,7 +1091,7 @@ V8TypeID V8ValueTypeCode(v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return V8TypeID::Other;
 }
 
-V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, const v8::Local<v8::Value> value) {
+SerializedValue SerialiseValueToStr(v8::Isolate* isolate, const v8::Local<v8::Value> value) {
   v8::MaybeLocal<v8::String> maybe_json_string = v8::JSON::Stringify(isolate->GetCurrentContext(), value);
 
   v8::Local<v8::String> json_string;
@@ -1148,7 +1148,7 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, const v8::Local<v8::Va
   // return result;
 }
 
-v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8ExecutionResult& json) {
+v8::Local<v8::Value> DeserializeStrToV8(v8::Isolate* isolate, const SerializedValue& json) {
   LogV8("V8DeserializeResult.1/2", "json", json);
   v8::EscapableHandleScope handle_scope(isolate);
 
@@ -2148,7 +2148,7 @@ bool V8Debugger::hasScheduledBreakOnNextFunctionCall() const {
          m_externalAsyncTaskPauseRequested;
 }
 
-V8ExecutionResult V8Debugger::pauseWorker(const std::string& thread_dst, const std::string& call_id) const {
+SerializedValue V8Debugger::pauseWorker(const std::string& thread_dst, const std::string& call_id) const {
   DCHECK(enabled());
   return ThreadStateManager::PauseWorker(m_isolate, thread_dst, call_id);
 }
@@ -2164,10 +2164,10 @@ std::string V8Debugger::getPaused(const std::string& thread_id) const {
   return paused;
 }
 
-V8ExecutionResult V8Debugger::runSync(
+SerializedValue V8Debugger::runSync(
     const std::string& thread_dst, const std::string& call_id,
     std::string&& req_type, std::string&& target_id, std::string&& member_id,
-    std::string&& args_json) const {
+    SerializedValue&& args_json) const {
   DCHECK(enabled());
 
   ThreadTaskArguments args{std::move(req_type),
