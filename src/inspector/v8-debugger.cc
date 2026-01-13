@@ -186,8 +186,8 @@ class PokeTask : public v8::Task {
 
 struct ThreadTaskArguments {
   std::string req_type;  // Request type
-  std::string target_id;
-  std::string member_id;
+  std::string function_id;
+  std::string this_id;
   std::string args_json;
   bool is_async;
   bool serialize;
@@ -199,7 +199,7 @@ struct ThreadTask {
   const std::string call_id;
 
   std::optional<ThreadTaskArguments> args;
-  std::optional<std::string> result = std::nullopt;
+  std::optional<V8ExecutionResult> result = std::nullopt;
   bool is_processing = false;
 };
 
@@ -550,8 +550,8 @@ class ThreadStateManager {
 
     const ThreadTaskArguments& args = task->args.value();
     task->is_processing = true;
-    LogV8("ProcessTaskOnStack.1/3", "call_id", task->call_id, "target_id", args.target_id,
-        "member_id", args.member_id, "is_async", args.is_async, "serialize", args.serialize);
+    LogV8("ProcessTaskOnStack.1/3", "call_id", task->call_id, "function_id", args.function_id,
+        "this_id", args.this_id, "is_async", args.is_async, "serialize", args.serialize);
 
     v8::HandleScope handle_scope(isolate);
     v8::Context::Scope context_scope(isolate->GetCurrentContext());
@@ -570,14 +570,15 @@ class ThreadStateManager {
 
     const v8::Local<v8::Value> v8_req_type = CppToV8(isolate, args.req_type);
     const v8::Local<v8::Value> v8_call_id = CppToV8(isolate, task->call_id);
-    const v8::Local<v8::Value> v8_target = CppToV8(isolate, args.target_id);
-    const v8::Local<v8::Value> v8_member = CppToV8(isolate, args.member_id);
+    const v8::Local<v8::Value> v8_function = CppToV8(isolate, args.function_id);
+    const v8::Local<v8::Value> v8_this = CppToV8(isolate, args.this_id);
     const v8::Local<v8::Value> v8_args = CppToV8(isolate, args.args_json);
-    const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
-    const v8::Local<v8::Boolean> v8_serialize = v8::Boolean::New(isolate, args.serialize);
+    // const v8::Local<v8::Boolean> v8_async = v8::Boolean::New(isolate, args.is_async);
+    // const v8::Local<v8::Boolean> v8_serialize = v8::Boolean::New(isolate, args.serialize);
 
-    constexpr size_t num_args = 7;
-    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_call_id, v8_target, v8_member, v8_args, v8_async, v8_serialize};
+    constexpr size_t num_args = 5; // TODO: 7
+    // v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_call_id, v8_function, v8_this, v8_args, v8_async, v8_serialize};
+    v8::Local<v8::Value> argv[num_args] = {v8_req_type, v8_call_id, v8_function, v8_this, v8_args};
 
     LogV8("ProcessTaskOnStack.2/3 [before JS call]");
 
@@ -587,6 +588,17 @@ class ThreadStateManager {
     task = TopTaskFor(t_worker_thread_id);
 
     if (call_result.IsEmpty()) {
+      if (try_catch.HasCaught()) {
+        v8::String::Utf8Value msg(isolate, try_catch.Exception());
+        std::string stack_str = "<unavailable>";
+        v8::Local<v8::Value> stack_value;
+        if (try_catch.StackTrace(v8_context).ToLocal(&stack_value) && stack_value->IsString()) {
+          v8::String::Utf8Value stack_utf8(isolate, stack_value);
+          if (*stack_utf8) stack_str = *stack_utf8;
+        }
+        LogV8("ProcessTaskOnStack.3/3 [failed with exception]", "msg",
+              *msg ? *msg : "<unknown>", "stack", stack_str, "call_id", task->call_id);
+      }
       LogV8("ProcessTaskOnStack.3/3 [failed call result]", "call_id", task->call_id);
       task->result = V8ExecutionResult{};
     } else {
@@ -1137,6 +1149,7 @@ V8ExecutionResult V8SerializeResult(v8::Isolate* isolate, const v8::Local<v8::Va
 }
 
 v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8ExecutionResult& json) {
+  LogV8("V8DeserializeResult.1/2", "json", json);
   v8::EscapableHandleScope handle_scope(isolate);
 
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
@@ -1157,6 +1170,8 @@ v8::Local<v8::Value> V8DeserializeResult(v8::Isolate* isolate, const V8Execution
   if (!v8::JSON::Parse(context, json_string).ToLocal(&value)) {
      return handle_scope.Escape(v8::Undefined(isolate));
   }
+
+  LogV8("V8DeserializeResult.2/2");
 
   return handle_scope.Escape(value);
 }
@@ -2152,15 +2167,15 @@ std::string V8Debugger::getPaused(const std::string& thread_id) const {
 V8ExecutionResult V8Debugger::runSync(
     const std::string& thread_dst, const std::string& call_id,
     std::string&& req_type, std::string&& target_id, std::string&& member_id,
-    std::string&& args_json, bool is_async, bool serialize) const {
+    std::string&& args_json) const {
   DCHECK(enabled());
 
   ThreadTaskArguments args{std::move(req_type),
                            std::move(target_id),
                            std::move(member_id),
                            std::move(args_json),
-                           is_async,
-                           serialize};
+                           false, // TODO: work out
+                           false};
 
   LogV8("runSync", "thread_dst", thread_dst, "call_id", call_id, "TSM",
         ThreadStateManager::DumpState());
@@ -2204,8 +2219,8 @@ std::ostream& operator<<(std::ostream& os, const ThreadTaskArguments& args) {
 
   os << "{"
     << "\"req_type\":\"" << args.req_type << "\","
-    << "\"target_id\":\"" << args.target_id << "\","
-    << "\"member_id\":\"" << args.member_id << "\","
+    << "\"function_id\":\"" << args.function_id << "\","
+    << "\"this_id\":\"" << args.this_id << "\","
     << "\"args_json\":";
   if (raw_args) {
     os << args.args_json;

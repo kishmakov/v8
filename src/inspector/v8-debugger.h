@@ -124,7 +124,7 @@ class V8Debugger : public v8::debug::DebugDelegate,
                              std::string&& req_type,
                              std::string&& target_id,
                              std::string&& member_id,
-                             std::string&& args_json, bool is_async, bool serialize) const;
+                             std::string&& args_json) const;
 
   // Must be called from the worker thread running JS (so that m_isolate matches
   // that thread).

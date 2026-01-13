@@ -1138,15 +1138,15 @@ std::string IdToString(BuiltinArguments args, Isolate* isolate, int id) {
   return result;
 }
 
-bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
-  Handle<Object> idObj = args.atOrUndefined(isolate, id);
-  if (IsUndefined(*idObj, isolate)) return false;
-
-  Local<Value> value = Utils::ToLocal(idObj);
-  if (!value->IsBoolean()) return false;
-
-  return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
-}
+// bool IdToBool(BuiltinArguments args, Isolate* isolate, int id) {
+//   Handle<Object> idObj = args.atOrUndefined(isolate, id);
+//   if (IsUndefined(*idObj, isolate)) return false;
+//
+//   Local<Value> value = Utils::ToLocal(idObj);
+//   if (!value->IsBoolean()) return false;
+//
+//   return value->BooleanValue(reinterpret_cast<v8::Isolate*>(isolate));
+// }
 
 // void InstallInto(v8::Isolate* isolate, Handle<Object> object, const std::string& key, Local<Value> value) {
 //   Local<v8::String> v8_key = v8::String::NewFromUtf8(isolate, key.c_str()).ToLocalChecked();
@@ -1347,6 +1347,9 @@ BUILTIN(RegisterWorker) {
   Local<Value> func_value = Utils::ToLocal(args.atOrUndefined(isolate, 2));
   BuiltinsLog() << " thread=" << thread_id << std::endl;
 
+  if (!GetDebugger(v8_isolate)->enabled()) {
+    GetDebugger(v8_isolate)->enable();
+  }
   GetDebugger(v8_isolate)->registerWorkerThread(thread_id, func_value);
 
   BuiltinsLog().lock(my_counter) << " RegisterWorker.2/2" << std::endl;
@@ -1360,26 +1363,26 @@ BUILTIN(RunSync) {
   HandleScope scope(isolate);
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
-  std::string thread_dst = IdToString(args, isolate, 1);
-  std::string call_id = IdToString(args, isolate, 2);
+  std::string req_type = IdToString(args, isolate, 1);
 
-  std::string req_type = IdToString(args, isolate, 3);
-  std::string target_id = IdToString(args, isolate, 4);
-  std::string member_id = IdToString(args, isolate, 5);
+  std::string thread_dst = IdToString(args, isolate, 2);
+  std::string call_id = IdToString(args, isolate, 3);
+  std::string function_id = IdToString(args, isolate, 4);
+  std::string this_id = IdToString(args, isolate, 5);
   std::string args_json = IdToString(args, isolate, 6);
-  bool is_async = IdToBool(args, isolate, 7);
-  bool serialize = IdToBool(args, isolate, 8);
+  // bool is_async = IdToBool(args, isolate, 7);
+  // bool serialize = IdToBool(args, isolate, 8);
 
 
   BuiltinsLog()
+    << " type=" << req_type
     << " thread_dst=" << thread_dst
     << " call_id=" << call_id
-    << " req_type=" << req_type
-    << " target_id=" << target_id
-    << " member_id=" << member_id
+    << " function_id=" << function_id
+    << " this_id=" << this_id
     << " args_json=" << args_json
-    << " is_async=" << is_async
-    << " serialize=" << serialize
+    // << " is_async=" << is_async
+    // << " serialize=" << serialize
     << std::endl;
 
   if (!GetDebugger(v8_isolate)->enabled()) {
@@ -1390,8 +1393,8 @@ BUILTIN(RunSync) {
   BuiltinsLog().lock(my_counter) << " RunSync.2/4 [scheduling task]" << std::endl;
   auto result = GetDebugger(v8_isolate)
                     ->runSync(thread_dst, call_id, std::move(req_type),
-                              std::move(target_id), std::move(member_id),
-                              std::move(args_json), is_async, serialize);
+                              std::move(function_id), std::move(this_id),
+                              std::move(args_json));
 
   // BuiltinsLog().lock(my_counter) << " RunSync.4/4"
   //   << " type=" << static_cast<int>(result.commTypeID)
